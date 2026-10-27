@@ -15,6 +15,7 @@ option(LLT_BUILD_TESTS "Build unit tests" ON)
 set(LLT_SANITIZER "" CACHE STRING "Sanitizer to enable: address, thread, undefined, or empty")
 
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 # Shared warning and optimisation policy. Every target links this.
 add_library(llt_flags INTERFACE)
@@ -40,19 +41,30 @@ endif()
 add_library(llt_core STATIC
     src/core/clock.cpp
     src/core/cpu.cpp
+    src/net/tcp.cpp
+    src/net/tls.cpp
+    src/net/http.cpp
+    src/net/ws.cpp
 )
 target_include_directories(llt_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(llt_core PUBLIC llt_flags Threads::Threads)
+target_link_libraries(llt_core PUBLIC llt_flags Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 
 add_executable(llt_bot src/main.cpp)
 target_link_libraries(llt_bot PRIVATE llt_core)
+
+add_executable(md_dump src/tools/md_dump.cpp)
+target_link_libraries(md_dump PRIVATE llt_core)
+
+add_executable(lat_probe src/tools/lat_probe.cpp)
+target_link_libraries(lat_probe PRIVATE llt_core)
 
 # LTO pays off in the hot path but breaks sanitizer symbolisation, so keep them apart.
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT LLT_SANITIZER)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT LLT_IPO_OK OUTPUT LLT_IPO_MSG)
     if(LLT_IPO_OK)
-        set_property(TARGET llt_core llt_bot PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+        set_property(TARGET llt_core llt_bot md_dump lat_probe
+                     PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
 endif()
 
