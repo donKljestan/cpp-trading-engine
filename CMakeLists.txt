@@ -41,6 +41,7 @@ endif()
 add_library(llt_core STATIC
     src/core/clock.cpp
     src/core/cpu.cpp
+    src/md/record.cpp
     src/net/tcp.cpp
     src/net/tls.cpp
     src/net/http.cpp
@@ -62,12 +63,18 @@ target_link_libraries(lat_probe PRIVATE llt_core)
 add_executable(sym_scan src/tools/sym_scan.cpp)
 target_link_libraries(sym_scan PRIVATE llt_core)
 
+add_executable(md_record src/tools/md_record.cpp)
+target_link_libraries(md_record PRIVATE llt_core)
+
+add_executable(md_replay src/tools/md_replay.cpp)
+target_link_libraries(md_replay PRIVATE llt_core)
+
 # LTO pays off in the hot path but breaks sanitizer symbolisation, so keep them apart.
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT LLT_SANITIZER)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT LLT_IPO_OK OUTPUT LLT_IPO_MSG)
     if(LLT_IPO_OK)
-        set_property(TARGET llt_core llt_bot md_dump lat_probe sym_scan
+        set_property(TARGET llt_core llt_bot md_dump lat_probe sym_scan md_record md_replay
                      PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
 endif()
@@ -82,6 +89,7 @@ if(LLT_BUILD_TESTS)
         tests/test_json_scan.cpp
         tests/test_bn_parse.cpp
         tests/test_bn_rest.cpp
+        tests/test_record.cpp
     )
     target_include_directories(llt_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(llt_tests PRIVATE llt_core)
