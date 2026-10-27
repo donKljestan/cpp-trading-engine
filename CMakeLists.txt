@@ -45,6 +45,7 @@ add_library(llt_core STATIC
     src/net/tls.cpp
     src/net/http.cpp
     src/net/ws.cpp
+    src/venue/binance/bn_rest.cpp
 )
 target_include_directories(llt_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(llt_core PUBLIC llt_flags Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
@@ -75,6 +76,9 @@ if(LLT_BUILD_TESTS)
         tests/test_fixed.cpp
         tests/test_spsc.cpp
         tests/test_clock.cpp
+        tests/test_json_scan.cpp
+        tests/test_bn_parse.cpp
+        tests/test_bn_rest.cpp
     )
     target_include_directories(llt_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(llt_tests PRIVATE llt_core)

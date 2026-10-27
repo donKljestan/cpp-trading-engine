@@ -1,64 +1,168 @@
-// Connects to the Binance USDⓈ-M futures market data stream and reports what arrives.
-//
-// This is the first end-to-end proof of the network stack, and the seed of lat_probe:
-// the delay column is the only number that decides whether a quoting strategy is
-// viable from a given location.
+// Connects to the Binance USDⓈ-M futures market data feed and reports what arrives.
 //
 //   md_dump [streams] [messages]
-//   md_dump btcusdt@bookTicker 50
-//   md_dump "btcusdt@bookTicker/ethusdt@aggTrade" 200
+//   md_dump btcusdt@bookTicker 100
+//   md_dump "btcusdt@bookTicker/btcusdt@depth20@100ms/btcusdt@trade" 300
+//
+// LLT_RAW=1 dumps undecoded frames; LLT_SUB sends a live subscription request first.
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <string>
 #include <vector>
 
 #include "llt/core/clock.hpp"
 #include "llt/net/ws.hpp"
+#include "llt/venue/binance/bn_feed.hpp"
+#include "llt/venue/binance/bn_rest.hpp"
 
 namespace {
 
-constexpr const char* kHost = "fstream.binance.com";
-constexpr uint16_t    kPort = 443;
-
-// Pulls an unsigned integer field out of a JSON object without a full parse.
-// Good enough for a diagnostic tool; the hot path gets a real scanner in bn_parse.
-bool find_uint_field(std::string_view json, std::string_view key, uint64_t& out) {
-    char pattern[32];
-    const int n = std::snprintf(pattern, sizeof(pattern), "\"%.*s\":",
-                                static_cast<int>(key.size()), key.data());
-    if (n <= 0) return false;
-
-    const size_t pos = json.find(std::string_view(pattern, static_cast<size_t>(n)));
-    if (pos == std::string_view::npos) return false;
-
-    size_t i = pos + static_cast<size_t>(n);
-    if (i < json.size() && json[i] == '"') ++i;
-
-    uint64_t v    = 0;
-    bool     seen = false;
-    for (; i < json.size() && json[i] >= '0' && json[i] <= '9'; ++i) {
-        v = v * 10 + static_cast<uint64_t>(json[i] - '0');
-        seen = true;
+std::vector<std::string> split(const std::string& s, char sep) {
+    std::vector<std::string> out;
+    size_t                   begin = 0;
+    while (begin <= s.size()) {
+        const size_t end = s.find(sep, begin);
+        if (end == std::string::npos) {
+            out.push_back(s.substr(begin));
+            break;
+        }
+        out.push_back(s.substr(begin, end - begin));
+        begin = end + 1;
     }
-    if (!seen) return false;
-    out = v;
-    return true;
+    return out;
 }
 
-void print_percentiles(std::vector<int64_t>& v) {
+char* format(llt::Fixed v, char* buf, size_t cap) {
+    const size_t n = llt::format_fixed(v, buf, cap - 1);
+    buf[n]         = '\0';
+    return buf;
+}
+
+struct Printer {
+    long                shown = 0;
+    long                limit = 6;
+    std::vector<double> spread_bps;
+
+    void on_book_ticker(const llt::BookTicker& bt) {
+        const double mid = bt.mid().to_double();
+        if (mid > 0.0) spread_bps.push_back(bt.spread().to_double() / mid * 1e4);
+
+        if (shown++ >= limit) return;
+        char a[32];
+        char b[32];
+        char c[32];
+        char d[32];
+        std::printf("  book  %-12s %s x %s  |  %s x %s\n", bt.symbol.c_str(),
+                    format(bt.bid_qty, a, sizeof(a)), format(bt.bid_px, b, sizeof(b)),
+                    format(bt.ask_px, c, sizeof(c)), format(bt.ask_qty, d, sizeof(d)));
+    }
+
+    void on_depth(const llt::DepthSnapshot& snap) {
+        if (shown++ >= limit) return;
+        std::printf("  depth %-12s %u bids / %u asks   imbalance(5) %+.3f\n",
+                    snap.symbol.c_str(), snap.n_bids, snap.n_asks, snap.imbalance(5));
+    }
+
+    void on_trade(const llt::Trade& t) {
+        if (shown++ >= limit) return;
+        char p[32];
+        char q[32];
+        std::printf("  trade %-12s %s @ %s   aggressor %s\n", t.symbol.c_str(),
+                    format(t.qty, q, sizeof(q)), format(t.px, p, sizeof(p)),
+                    t.aggressor() == llt::Side::Buy ? "buy" : "sell");
+    }
+};
+
+void report_spreads(std::vector<double>& v) {
     if (v.empty()) return;
     std::sort(v.begin(), v.end());
     const auto at = [&](double q) {
         return v[static_cast<size_t>(q * static_cast<double>(v.size() - 1))];
     };
-    std::printf("\ndelay exchange -> local (ms, includes clock offset)\n");
-    std::printf("  p50 %ld   p90 %ld   p99 %ld   min %ld   max %ld   n=%zu\n",
-                static_cast<long>(at(0.50)), static_cast<long>(at(0.90)),
-                static_cast<long>(at(0.99)), static_cast<long>(v.front()),
-                static_cast<long>(v.back()), v.size());
+
+    std::printf("\nquoted spread (basis points)\n");
+    std::printf("  min %.4f   p50 %.4f   p90 %.4f   max %.4f\n", v.front(), at(0.50),
+                at(0.90), v.back());
+    std::printf("  maker round trip at VIP0 costs 4.0 bps; a spread below that cannot pay.\n");
+}
+
+// Prints frames exactly as the exchange sends them, bypassing all decoding.
+// The only way to tell "we failed to parse it" apart from "it never arrived".
+// An argument starting with '/' is used as the raw request path, so any endpoint
+// shape can be probed, not just /stream?streams=.
+int raw_mode(const std::string& streams, long want) {
+    const std::string path =
+        streams.starts_with('/') ? streams : ("/stream?streams=" + streams);
+    std::printf("raw mode: wss://%s%s\n\n", llt::binance::kMdHost, path.c_str());
+
+    llt::net::WsClient ws;
+    if (!ws.connect(llt::binance::kMdHost, 443, path.c_str(), 10'000)) {
+        std::fprintf(stderr, "connect failed: %s\n", llt::net::WsClient::last_error());
+        return 1;
+    }
+
+    bool deadline_reached = false;
+
+    // Optional live subscription request, e.g.
+    //   LLT_SUB='{"method":"SUBSCRIBE","params":["btcusdt@aggTrade"],"id":1}'
+    if (const char* sub = std::getenv("LLT_SUB"); sub != nullptr) {
+        std::printf("sending: %s\n\n", sub);
+        if (!ws.send_text(sub)) {
+            std::fprintf(stderr, "subscribe send failed: %s\n",
+                         llt::net::WsClient::last_error());
+            return 1;
+        }
+    }
+    const uint64_t deadline = llt::clk::mono_ns() + 20'000'000'000ULL;
+    long           seen     = 0;
+    long           n_binary = 0;
+    long           n_ping   = 0;
+    long           n_idle   = 0;
+
+    while (seen < want && llt::clk::mono_ns() < deadline) {
+        std::string_view payload;
+
+        switch (ws.poll(payload)) {
+            case llt::net::WsClient::Event::Text:
+                std::printf("[%ld text %zu] %.*s\n", seen, payload.size(),
+                            static_cast<int>(payload.size()), payload.data());
+                ++seen;
+                break;
+
+            case llt::net::WsClient::Event::Binary:
+                std::printf("[%ld BINARY %zu bytes]\n", seen, payload.size());
+                ++n_binary;
+                ++seen;
+                break;
+
+            case llt::net::WsClient::Event::Ping:
+                ++n_ping;
+                break;
+
+            case llt::net::WsClient::Event::Pong:
+                break;
+
+            case llt::net::WsClient::Event::None:
+                ++n_idle;
+                break;
+
+            case llt::net::WsClient::Event::Close:
+                std::printf("[closed by server]\n");
+                deadline_reached = true;
+                break;
+
+            case llt::net::WsClient::Event::Error:
+                std::fprintf(stderr, "error: %s\n", llt::net::WsClient::last_error());
+                return 1;
+        }
+        if (deadline_reached) break;
+    }
+
+    std::printf("\nframes %ld (binary %ld)   pings %ld   idle polls %ld\n", seen, n_binary,
+                n_ping, n_idle);
+    return 0;
 }
 
 }  // namespace
@@ -67,76 +171,77 @@ int main(int argc, char** argv) {
     llt::clk::clock_init();
 
     const std::string streams = (argc > 1) ? argv[1] : "btcusdt@bookTicker";
-    const long        want    = (argc > 2) ? std::strtol(argv[2], nullptr, 10) : 50;
+    const long        want    = (argc > 2) ? std::strtol(argv[2], nullptr, 10) : 100;
 
-    const std::string path = "/stream?streams=" + streams;
+    if (std::getenv("LLT_RAW") != nullptr) return raw_mode(streams, want);
 
-    std::printf("connecting wss://%s%s\n", kHost, path.c_str());
+    llt::binance::RestClient rest;
+    if (rest.connect()) {
+        std::vector<llt::Instrument> instruments;
+        if (rest.fetch_instruments(instruments)) {
+            size_t tradable = 0;
+            for (const auto& i : instruments) tradable += i.tradable ? 1 : 0;
+            std::printf("exchangeInfo: %zu USDT perpetuals, %zu tradable\n",
+                        instruments.size(), tradable);
 
-    const uint64_t t_start = llt::clk::mono_ns();
-
-    llt::net::WsClient ws;
-    if (!ws.connect(kHost, kPort, path.c_str(), 10'000)) {
-        std::fprintf(stderr, "connect failed: %s\n", llt::net::WsClient::last_error());
-        return 1;
+            for (const auto& i : instruments) {
+                if (i.symbol.view() != "BTCUSDT") continue;
+                char t[32];
+                char s[32];
+                char n[32];
+                std::printf("  BTCUSDT tick %s  step %s  minNotional %s\n",
+                            format(i.tick_size, t, sizeof(t)),
+                            format(i.step_size, s, sizeof(s)),
+                            format(i.min_notional, n, sizeof(n)));
+            }
+        } else {
+            std::fprintf(stderr, "exchangeInfo failed: %s\n",
+                         llt::binance::RestClient::last_error());
+        }
+        rest.close();
     }
 
-    std::printf("connected in %.1f ms\n\n",
-                static_cast<double>(llt::clk::mono_ns() - t_start) / 1e6);
+    llt::binance::MdFeed::Config cfg;
+    cfg.streams = split(streams, '/');
 
-    std::vector<int64_t> delays;
-    delays.reserve(static_cast<size_t>(want));
+    llt::binance::MdFeed feed;
+    if (!feed.connect(cfg)) {
+        std::fprintf(stderr, "feed connect failed: %s\n",
+                     llt::binance::MdFeed::last_error());
+        return 1;
+    }
+    std::printf("\nstreaming %s\n\n", streams.c_str());
 
-    long received = 0;
-    while (received < want) {
-        std::string_view payload;
-        const auto       ev = ws.poll(payload);
+    Printer printer;
+    bool    running = true;
 
-        switch (ev) {
-            case llt::net::WsClient::Event::None:
-                continue;
-
-            case llt::net::WsClient::Event::Text: {
-                const uint64_t local_ms = llt::clk::wall_ns() / 1'000'000ULL;
-
-                uint64_t event_ms = 0;
-                if (find_uint_field(payload, "E", event_ms)) {
-                    delays.push_back(static_cast<int64_t>(local_ms) -
-                                     static_cast<int64_t>(event_ms));
-                }
-
-                if (received < 5) {
-                    std::printf("%.*s\n", static_cast<int>(std::min<size_t>(payload.size(), 400)),
-                                payload.data());
-                }
-                ++received;
+    while (running && static_cast<long>(feed.stats().frames) < want) {
+        switch (feed.poll(printer)) {
+            case llt::binance::MdFeed::PollResult::Idle:
+            case llt::binance::MdFeed::PollResult::Delivered:
                 break;
-            }
-
-            case llt::net::WsClient::Event::Ping:
-                std::printf("[ping, answered]\n");
+            case llt::binance::MdFeed::PollResult::Disconnected:
+                std::printf("\n[server closed the connection]\n");
+                running = false;
                 break;
-
-            case llt::net::WsClient::Event::Pong:
-                break;
-
-            case llt::net::WsClient::Event::Close:
-                std::printf("[server closed the connection]\n");
-                received = want;
-                break;
-
-            case llt::net::WsClient::Event::Binary:
-                break;
-
-            case llt::net::WsClient::Event::Error:
-                std::fprintf(stderr, "stream error: %s\n", llt::net::WsClient::last_error());
+            case llt::binance::MdFeed::PollResult::Error:
+                std::fprintf(stderr, "\nstream error: %s\n",
+                             llt::binance::MdFeed::last_error());
                 return 1;
         }
     }
 
-    std::printf("\nreceived %ld messages\n", received);
-    print_percentiles(delays);
+    const auto& st = feed.stats();
+    std::printf("\nframes %lu   bookTicker %lu   depth %lu   trades %lu\n",
+                static_cast<unsigned long>(st.frames),
+                static_cast<unsigned long>(st.book_tickers),
+                static_cast<unsigned long>(st.depths),
+                static_cast<unsigned long>(st.trades));
+    std::printf("pings %lu   ignored %lu   decode errors %lu\n",
+                static_cast<unsigned long>(st.pings),
+                static_cast<unsigned long>(st.ignored),
+                static_cast<unsigned long>(st.decode_errors));
 
-    static_cast<void>(ws.send_close());
+    report_spreads(printer.spread_bps);
     return 0;
 }

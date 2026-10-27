@@ -46,6 +46,11 @@ public:
     [[nodiscard]] bool valid() const noexcept { return tls_.valid(); }
     [[nodiscard]] int  fd() const noexcept { return tls_.fd(); }
 
+    // TSC taken immediately after the socket read that produced the current frame.
+    // Frames that arrived in the same read share a timestamp, which is correct: they
+    // reached the machine together.
+    [[nodiscard]] uint64_t last_recv_tsc() const noexcept { return last_recv_tsc_; }
+
     [[nodiscard]] static const char* last_error() noexcept;
 
 private:
@@ -68,6 +73,7 @@ private:
     uint8_t              frag_opcode_ = 0;
 
     std::vector<uint8_t> tx_;
+    uint64_t             last_recv_tsc_ = 0;
 };
 
 }  // namespace llt::net

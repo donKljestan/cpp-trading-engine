@@ -432,6 +432,7 @@ WsClient::Event WsClient::poll(std::string_view& payload) {
         switch (st) {
             case IoStatus::Ok:
                 if (n == 0) return Event::None;
+                last_recv_tsc_ = llt::clk::rdtsc();
                 rx_end_ += n;
                 break;
             case IoStatus::WouldBlock:
