@@ -1,0 +1,12 @@
+build/
+compile_commands.json
+.cache/
+
+# Anything that could carry an API key or recorded account state.
+*.env
+.env*
+config/*.local.toml
+secrets/
+data/
+*.pcap
+*.mdlog
