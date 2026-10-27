@@ -1,6 +1,8 @@
 #include "llt/venue/binance/bn_rest.hpp"
 
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 
 #include "llt/venue/json_scan.hpp"
 
@@ -96,6 +98,39 @@ bool parse_exchange_info(std::string_view json, std::vector<Instrument>& out) {
     return true;
 }
 
+bool parse_24h_tickers(std::string_view json, std::vector<Ticker24h>& out) {
+    json::ArrayScanner entries(json);
+    std::string_view   entry;
+
+    while (entries.next(entry)) {
+        Ticker24h           t{};
+        json::ObjectScanner fields(entry);
+        std::string_view    key;
+        std::string_view    value;
+
+        while (fields.next(key, value)) {
+            if (key == "symbol") {
+                t.symbol = Symbol(json::unquote(value));
+            } else if (key == "lastPrice") {
+                static_cast<void>(json::parse_decimal(value, t.last_price));
+            } else if (key == "quoteVolume") {
+                const std::string raw(json::unquote(value));
+                t.quote_volume = std::strtod(raw.c_str(), nullptr);
+            } else if (key == "count") {
+                static_cast<void>(json::parse_uint(value, t.trade_count));
+            }
+        }
+
+        if (!t.symbol.empty()) out.push_back(t);
+    }
+
+    if (out.empty()) {
+        record("24h ticker response contained no symbols");
+        return false;
+    }
+    return true;
+}
+
 bool RestClient::connect(const char* host, uint16_t port, int timeout_ms) {
     return http_.connect(host, port, timeout_ms);
 }
@@ -112,6 +147,20 @@ bool RestClient::fetch_instruments(std::vector<Instrument>& out, int timeout_ms)
         return false;
     }
     return parse_exchange_info(resp.body, out);
+}
+
+bool RestClient::fetch_24h_tickers(std::vector<Ticker24h>& out, int timeout_ms) {
+    net::HttpResponse resp;
+    if (!http_.get("/fapi/v1/ticker/24hr", timeout_ms, resp)) {
+        record(net::HttpClient::last_error());
+        return false;
+    }
+    if (resp.status != 200) {
+        std::snprintf(t_last_error, sizeof(t_last_error), "ticker/24hr returned HTTP %d",
+                      resp.status);
+        return false;
+    }
+    return parse_24h_tickers(resp.body, out);
 }
 
 bool RestClient::server_time_ms(uint64_t& out, int timeout_ms) {

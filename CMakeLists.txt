@@ -59,12 +59,15 @@ target_link_libraries(md_dump PRIVATE llt_core)
 add_executable(lat_probe src/tools/lat_probe.cpp)
 target_link_libraries(lat_probe PRIVATE llt_core)
 
+add_executable(sym_scan src/tools/sym_scan.cpp)
+target_link_libraries(sym_scan PRIVATE llt_core)
+
 # LTO pays off in the hot path but breaks sanitizer symbolisation, so keep them apart.
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT LLT_SANITIZER)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT LLT_IPO_OK OUTPUT LLT_IPO_MSG)
     if(LLT_IPO_OK)
-        set_property(TARGET llt_core llt_bot md_dump lat_probe
+        set_property(TARGET llt_core llt_bot md_dump lat_probe sym_scan
                      PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
 endif()

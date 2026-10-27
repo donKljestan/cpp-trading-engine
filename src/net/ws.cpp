@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include "llt/core/clock.hpp"
 
@@ -282,23 +283,19 @@ bool WsClient::connect(const char* host, uint16_t port, const char* path, int ti
         return false;
     }
 
-    char      request[1024];
-    const int len = std::snprintf(request, sizeof(request),
-                                  "GET %s HTTP/1.1\r\n"
-                                  "Host: %s\r\n"
-                                  "Upgrade: websocket\r\n"
-                                  "Connection: Upgrade\r\n"
-                                  "Sec-WebSocket-Key: %s\r\n"
-                                  "Sec-WebSocket-Version: 13\r\n"
-                                  "\r\n",
-                                  path, host, key_b64);
-    if (len <= 0 || static_cast<size_t>(len) >= sizeof(request)) {
-        record("handshake request too long");
-        return false;
-    }
+    std::string request;
+    request.reserve(512 + std::strlen(path));
+    request += "GET ";
+    request += path;
+    request += " HTTP/1.1\r\nHost: ";
+    request += host;
+    request +=
+        "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ";
+    request += key_b64;
+    request += "\r\nSec-WebSocket-Version: 13\r\n\r\n";
 
     reserve_more();
-    if (!write_all(request, static_cast<size_t>(len))) return false;
+    if (!write_all(request.data(), request.size())) return false;
 
     return read_handshake(expected_accept, timeout_ms);
 }

@@ -36,15 +36,23 @@ public:
 
     enum class PollResult { Idle, Delivered, Disconnected, Error };
 
+    // Subscribes with a SUBSCRIBE message rather than a /stream?streams= URL. The URL
+    // form breaks down once the list is long, and this is the venue's documented path
+    // for changing subscriptions on a live connection.
     [[nodiscard]] bool connect(const Config& cfg) {
         if (cfg.streams.empty()) return false;
+        if (!ws_.connect(cfg.host.c_str(), cfg.port, "/ws", cfg.timeout_ms)) return false;
 
-        std::string path = "/stream?streams=";
+        std::string msg = R"({"method":"SUBSCRIBE","params":[)";
         for (size_t i = 0; i < cfg.streams.size(); ++i) {
-            if (i != 0) path += '/';
-            path += cfg.streams[i];
+            if (i != 0) msg += ',';
+            msg += '"';
+            msg += cfg.streams[i];
+            msg += '"';
         }
-        return ws_.connect(cfg.host.c_str(), cfg.port, path.c_str(), cfg.timeout_ms);
+        msg += R"(],"id":1})";
+
+        return ws_.send_text(msg);
     }
 
     void close() noexcept { ws_.close(); }
@@ -89,21 +97,31 @@ private:
     template <MdHandler H>
     bool dispatch(std::string_view payload, H& handler) {
         std::string_view stream;
-        std::string_view data;
-        if (!unwrap_combined(payload, stream, data)) {
-            ++stats_.ignored;
-            return false;
+        std::string_view data = payload;
+        std::string_view kind;
+
+        if (unwrap_combined(payload, stream, data)) {
+            // Stream names are "<symbol>@<kind>[@<interval>]", or a bare "!kind" for
+            // the all-market variants.
+            const size_t at = stream.find('@');
+            kind = (at == std::string_view::npos) ? stream : stream.substr(at + 1);
+            if (!kind.empty() && kind.front() == '!') kind.remove_prefix(1);
+        } else {
+            std::string_view event_type;
+            if (!json::find_field(data, "e", event_type)) {
+                // Subscription acknowledgements carry "result" instead of an event type.
+                std::string_view ignored;
+                if (!json::find_field(data, "result", ignored)) ++stats_.ignored;
+                return false;
+            }
+            kind = json::unquote(event_type);
         }
 
-        // Stream names are "<symbol>@<kind>[@<interval>]". Keying off the name avoids
-        // depending on the field order inside the payload.
-        const size_t at = stream.find('@');
-        if (at == std::string_view::npos) {
+        if (kind.empty()) {
             ++stats_.ignored;
             return false;
         }
-        const std::string_view kind = stream.substr(at + 1);
-        const uint64_t         tsc  = ws_.last_recv_tsc();
+        const uint64_t tsc = ws_.last_recv_tsc();
 
         if (kind.starts_with("bookTicker")) {
             BookTicker bt{};

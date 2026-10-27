@@ -21,6 +21,16 @@ inline constexpr const char* kRestHostTestnet = "testnet.binancefuture.com";
 // client so it can be tested against a fixture without a network.
 [[nodiscard]] bool parse_exchange_info(std::string_view json, std::vector<Instrument>& out);
 
+// Rolling 24h statistics, used to rank symbols rather than to price anything.
+struct Ticker24h {
+    Symbol   symbol;
+    Fixed    last_price;
+    double   quote_volume = 0.0;  // a double because 24h turnover overflows 1e-8 fixed point
+    uint64_t trade_count  = 0;
+};
+
+[[nodiscard]] bool parse_24h_tickers(std::string_view json, std::vector<Ticker24h>& out);
+
 class RestClient {
 public:
     [[nodiscard]] bool connect(const char* host = kRestHost, uint16_t port = 443,
@@ -29,6 +39,8 @@ public:
 
     [[nodiscard]] bool fetch_instruments(std::vector<Instrument>& out,
                                          int                      timeout_ms = 20'000);
+    [[nodiscard]] bool fetch_24h_tickers(std::vector<Ticker24h>& out,
+                                         int                     timeout_ms = 20'000);
     [[nodiscard]] bool server_time_ms(uint64_t& out, int timeout_ms = 10'000);
 
     [[nodiscard]] static const char* last_error() noexcept;
