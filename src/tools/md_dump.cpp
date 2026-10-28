@@ -95,10 +95,11 @@ void report_spreads(std::vector<double>& v) {
 int raw_mode(const std::string& streams, long want) {
     const std::string path =
         streams.starts_with('/') ? streams : ("/stream?streams=" + streams);
-    std::printf("raw mode: wss://%s%s\n\n", llt::binance::kMdHost, path.c_str());
+    const char* const host = llt::binance::active_env().md_ws;
+    std::printf("raw mode: wss://%s%s\n\n", host, path.c_str());
 
     llt::net::WsClient ws;
-    if (!ws.connect(llt::binance::kMdHost, 443, path.c_str(), 10'000)) {
+    if (!ws.connect(host, 443, path.c_str(), 10'000)) {
         std::fprintf(stderr, "connect failed: %s\n", llt::net::WsClient::last_error());
         return 1;
     }

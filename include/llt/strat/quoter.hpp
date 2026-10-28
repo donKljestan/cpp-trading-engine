@@ -4,7 +4,7 @@
 //
 // Inspired by Avellaneda-Stoikov rather than a literal implementation of it: the
 // textbook form needs a risk-aversion parameter calibrated in utility units, which
-// nothing here can supply honestly. What survives is the shape — a fair value, a
+// nothing here can supply honestly. What survives is the shape - a fair value, a
 // reservation price pushed away from inventory, and a spread bounded below by cost.
 //
 // Everything is computed in basis points of fair value, so the same parameters mean

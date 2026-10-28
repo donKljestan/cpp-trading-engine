@@ -47,6 +47,7 @@ add_library(llt_core STATIC
     src/net/tls.cpp
     src/net/http.cpp
     src/net/ws.cpp
+    src/venue/binance/bn_env.cpp
     src/venue/binance/bn_rest.cpp
 )
 target_include_directories(llt_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

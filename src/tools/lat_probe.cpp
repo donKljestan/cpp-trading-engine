@@ -14,11 +14,11 @@
 
 #include "llt/core/clock.hpp"
 #include "llt/net/http.hpp"
+#include "llt/venue/binance/bn_env.hpp"
 
 namespace {
 
-constexpr const char* kHost = "fapi.binance.com";
-constexpr uint16_t    kPort = 443;
+constexpr uint16_t kPort = 443;
 
 bool parse_server_time_ms(std::string_view body, uint64_t& out) {
     const size_t pos = body.find("\"serverTime\":");
@@ -54,6 +54,7 @@ int main(int argc, char** argv) {
     llt::clk::clock_init();
 
     const long samples = (argc > 1) ? std::strtol(argv[1], nullptr, 10) : 30;
+    const char* const kHost = llt::binance::active_env().rest;
 
     llt::net::HttpClient http;
     if (!http.connect(kHost, kPort, 10'000)) {

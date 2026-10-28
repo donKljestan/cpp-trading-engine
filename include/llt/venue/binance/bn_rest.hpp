@@ -10,12 +10,10 @@
 #include <vector>
 
 #include "llt/net/http.hpp"
+#include "llt/venue/binance/bn_env.hpp"
 #include "llt/venue/types.hpp"
 
 namespace llt::binance {
-
-inline constexpr const char* kRestHost        = "fapi.binance.com";
-inline constexpr const char* kRestHostTestnet = "testnet.binancefuture.com";
 
 // Extracts tradable perpetuals from an exchangeInfo payload. Split out from the
 // client so it can be tested against a fixture without a network.
@@ -33,7 +31,7 @@ struct Ticker24h {
 
 class RestClient {
 public:
-    [[nodiscard]] bool connect(const char* host = kRestHost, uint16_t port = 443,
+    [[nodiscard]] bool connect(const char* host = nullptr, uint16_t port = 443,
                                int timeout_ms = 10'000);
     void               close() noexcept { http_.close(); }
 

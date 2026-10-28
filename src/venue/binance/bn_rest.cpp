@@ -132,7 +132,7 @@ bool parse_24h_tickers(std::string_view json, std::vector<Ticker24h>& out) {
 }
 
 bool RestClient::connect(const char* host, uint16_t port, int timeout_ms) {
-    return http_.connect(host, port, timeout_ms);
+    return http_.connect(host != nullptr ? host : active_env().rest, port, timeout_ms);
 }
 
 bool RestClient::fetch_instruments(std::vector<Instrument>& out, int timeout_ms) {

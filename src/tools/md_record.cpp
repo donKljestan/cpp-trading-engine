@@ -29,6 +29,8 @@ void on_signal(int) { g_stop = 1; }
 struct Options {
     std::string symbols = "BTCUSDT";
     std::string out     = "md";
+    // Research wants the real book. Reading it places no orders and risks nothing.
+    std::string env         = "production";
     int         rotate_mins = 60;
     int         secs        = 0;  // 0 means run until interrupted
 };
@@ -42,6 +44,8 @@ Options parse_args(int argc, char** argv) {
             o.symbols = val;
         } else if (flag == "--out") {
             o.out = val;
+        } else if (flag == "--env") {
+            o.env = val;
         } else if (flag == "--rotate-mins") {
             o.rotate_mins = static_cast<int>(std::strtol(val, nullptr, 10));
         } else if (flag == "--secs") {
@@ -109,7 +113,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::printf("recording %zu streams to %s-*.mdlog\n", streams.size(), opt.out.c_str());
+    const llt::binance::Endpoints& env = llt::binance::env_by_name(opt.env.c_str());
+
+    std::printf("recording %zu streams from %s (%s) to %s-*.mdlog\n", streams.size(),
+                env.md_ws, env.name, opt.out.c_str());
     std::printf("rotating every %d min; ctrl-c to stop\n\n", opt.rotate_mins);
 
     const uint64_t rotate_ns =
@@ -138,7 +145,7 @@ int main(int argc, char** argv) {
                 if (g_stop != 0) break;
             }
 
-            if (!ws.connect(llt::binance::kMdHost, 443, "/ws", 10'000) ||
+            if (!ws.connect(env.md_ws, 443, "/ws", 10'000) ||
                 !ws.send_text(llt::binance::subscribe_message(streams, 1))) {
                 std::fprintf(stderr, "connect failed: %s\n",
                              llt::net::WsClient::last_error());

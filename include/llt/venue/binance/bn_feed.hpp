@@ -8,12 +8,10 @@
 
 #include "llt/net/ws.hpp"
 #include "llt/venue/adapter.hpp"
+#include "llt/venue/binance/bn_env.hpp"
 #include "llt/venue/binance/bn_parse.hpp"
 
 namespace llt::binance {
-
-inline constexpr const char* kMdHost        = "fstream.binance.com";
-inline constexpr const char* kMdHostTestnet = "stream.binancefuture.com";
 
 struct FeedStats {
     uint64_t frames        = 0;
@@ -120,7 +118,7 @@ public:
 
     struct Config {
         std::vector<std::string> streams;  // e.g. "btcusdt@bookTicker"
-        std::string              host       = kMdHost;
+        std::string              host       = active_env().md_ws;
         uint16_t                 port       = 443;
         int                      timeout_ms = 10'000;
     };

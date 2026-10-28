@@ -3,7 +3,7 @@
 // Ed25519 request signing.
 //
 // Binance supports Ed25519 keys, which matters for two reasons. The private key never
-// leaves this machine — only the public half is uploaded — and the WebSocket API can
+// leaves this machine - only the public half is uploaded - and the WebSocket API can
 // authenticate once per session instead of signing every order.
 //
 // Nothing here ever prints, logs or copies a private key.
