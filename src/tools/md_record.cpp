@@ -87,6 +87,10 @@ std::string timestamped_path(const std::string& prefix) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Under systemd stdout is a pipe, so it is block buffered by default and
+    // operational messages would sit unflushed for the life of the process.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
+
     llt::clk::clock_init();
     const Options opt = parse_args(argc, argv);
 
