@@ -65,7 +65,10 @@ echo
 present=$("$BACKTEST" "$WORK"/*.mdlog --symbol __ABSENT__ 2>&1 |
           awk '/events$/ {print $1}' | sort -u)
 
-if [[ -r "$ENV_FILE" ]]; then
+if [[ ! -r "$ENV_FILE" ]]; then
+    echo "  !! cannot read $ENV_FILE, so nothing checks that every symbol is captured"
+    echo "     sudo chmod 644 $ENV_FILE"
+else
     expected=$(grep -oP '(?<=^LLT_SYMBOLS=).*' "$ENV_FILE" | tr ',' '\n' | tr -d ' ' | sort -u)
     missing=$(comm -23 <(echo "$expected") <(echo "$present"))
     if [[ -n "$missing" ]]; then

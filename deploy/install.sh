@@ -30,7 +30,7 @@ sudo mkdir -p /etc/llt
 if [[ ! -f /etc/llt/record.env ]]; then
     echo "LLT_SYMBOLS=${LLT_SYMBOLS:-TACUSDT,CFGUSDT,CVXUSDT,DATAIPUSDT,HANAUSDT}" \
         | sudo tee /etc/llt/record.env > /dev/null
-    sudo chmod 600 /etc/llt/record.env
+    sudo chmod 644 /etc/llt/record.env
     echo "wrote /etc/llt/record.env"
 else
     echo "keeping existing /etc/llt/record.env"
