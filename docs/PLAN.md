@@ -25,10 +25,10 @@ as the signal that it works rather than the goal.
 | **F0** | Build, core primitives, CI | - | done |
 | **F1** | TCP/TLS/WebSocket, venue adapter, decode | - | done |
 | **F2** | `lat_probe`, `sym_scan`, `md_record`, `md_replay` | Does any symbol beat the fee hurdle? | done - conditional pass |
-| **F3** | Deploy to AWS Tokyo | What is the real round-trip time? | next |
-| **F3.5** | Continuous capture from Tokyo | Which strategy, decided from data? | pending |
-| **F4** | Signals, quoter, backtest over replay | Positive expectancy in replay? | pending |
-| **F5** | Ed25519 WebSocket API, order manager | - | pending |
+| **F3** | Deploy to AWS Tokyo | What is the real round-trip time? | done - 3.65 ms p50 |
+| **F3.5** | Continuous capture from Tokyo | Which strategy, decided from data? | running |
+| **F4** | Signals, quoter, backtest over replay | Positive expectancy in replay? | built, awaiting data |
+| **F5** | Ed25519 WebSocket API, order manager | - | in progress |
 | **F6** | Risk engine, dead-man switch, chaos tests | - | pending |
 | **F7** | Live smoke test, $20, one symbol | Does live agree with replay? | pending |
 | **F8** | Scale | Only if F4 and F7 agree | pending |
@@ -130,7 +130,7 @@ finding.
 
 ---
 
-## F3 - Deployment to Tokyo · next
+## F3 - Deployment to Tokyo · done
 
 AWS `ap-northeast-1`, `t3.small` on x86 (not ARM, so `__rdtsc` and `-march=native`
 remain available), Elastic IP so the eventual API key can be pinned to it, `chrony`,
@@ -143,15 +143,22 @@ baseline. The engine therefore starts on `epoll`, with busy-poll behind a config
 flag. Busy-poll saves single-digit microseconds; TLS, WebSocket framing and JSON
 decoding cost hundreds. It is not the bottleneck.
 
-**Storage.** A capture of three symbols ran at 2.8 MB per 43 s, of which BTCUSDT was 84%.
-Five candidate symbols project to roughly 2.2 GB/day, or 31 GB over two weeks. The
-originally planned 20 GB volume is not enough; either a larger volume, compression at
-rotation (JSON compresses 8–10×), or BTCUSDT reduced to `bookTicker` only.
+**Storage.** The projection of 2.2 GB/day was pessimistic: it came from a sample where
+BTCUSDT alone was 84% of the volume. The five candidate symbols actually run at about
+850 MB/day uncompressed, roughly 100 MB/day after the hourly gzip, so a fortnight fits
+in a couple of gigabytes.
 
-**First action after the instance is up:** run `lat_probe` and compare against the
-Belgrade baseline of p50 261 ms / p99 318 ms.
+**Result.** Round trip from Tokyo is p50 3.65 ms against 261 ms from Belgrade, and
+jitter falls from 57 ms to 2.3 ms. The latter is the more valuable half: constant delay
+can be priced into a quote, variable delay cannot. Details in
+[FINDINGS.md](FINDINGS.md#5a-the-same-measurement-from-tokyo).
 
-## F3.5 - Continuous capture · pending
+**Endpoint note.** `testnet.binancefuture.com` now redirects to a demo environment tied
+to the real account. `bn_env.hpp` holds the full map so demo and production hostnames
+cannot be mixed; market data recording deliberately defaults to production, since
+reading the real book is harmless and is the point of the exercise.
+
+## F3.5 - Continuous capture · running
 
 Two weeks of recording from Tokyo across Asian, European and US sessions. This runs as a
 `systemd` service and does not block development: F4 and F5 are built while it fills.
@@ -159,21 +166,34 @@ Two weeks of recording from Tokyo across Asian, European and US sessions. This r
 Candidates: the symbols surviving F2, plus BTCUSDT as a control whose economics are
 known to be negative.
 
-## F4 - Strategy · pending
+## F4 - Strategy · built, awaiting data
 
 Microprice, order book imbalance, trade-flow imbalance, realised volatility. Reservation
 price skewed by inventory, half-spread bounded below by the fee break-even. Requote
 policy with a tick threshold and a minimum interval, since requoting on every tick burns
 rate limit and destroys queue position. Adverse-selection guards that pull quotes on
-extreme imbalance, trade bursts or volatility spikes.
+extreme imbalance or one-directional flow.
 
-Backtested through `md_replay` over the captured data.
+Signals are driven by matching-engine time rather than local arrival time, so a replay
+produces identical numbers on any host at any speed. Flow signals stay neutral until
+enough trades have accumulated: an average seeded with its first observation reports a
+single print as a total imbalance, which would have the quoter react to one trade.
 
-## F5 - Execution · pending
+The fill simulator models queue position explicitly and states its biases in
+`sim.hpp`. The first run, over a 43-second sample, produced no fills and explained why:
+the required spread put the quote at the touch behind 1650 units of resting size, with
+an order of 45. Queue position, not spread, was the binding constraint. Whether that
+holds over real data is the question F3.5 exists to answer.
 
-Ed25519 `session.logon` on the WebSocket API, so no request carries a signature.
-`order.place` with `timeInForce=GTX` (post-only: rejected rather than crossing and
-paying taker fees), `order.modify`, batch operations. User data stream for
+## F5 - Execution · in progress
+
+Done: Ed25519 signing validated against RFC 8032 test vectors, a key generator that
+never prints a private key, and a WebSocket API client with `session.logon` so no
+request carries a signature. `auth_check` proves a credential end to end over both REST
+and the socket before anything is built on it.
+
+Remaining: `order.place` with `timeInForce=GTX` (post-only: rejected rather than
+crossing and paying taker fees), `order.modify`, batch operations. User data stream for
 `ORDER_TRADE_UPDATE` and `ACCOUNT_UPDATE`. Order manager with a fixed slot pool and an
 explicit state machine, reconciled against REST. Token-bucket rate limiting applied
 before sending rather than after rejection.

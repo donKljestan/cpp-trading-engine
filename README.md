@@ -3,9 +3,9 @@
 A market data and execution engine for Binance USDⓈ-M perpetual futures, written in
 C++20 with no runtime dependencies beyond OpenSSL.
 
-**Status: market data plane complete and measured. No orders are sent yet.**
-See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [docs/FINDINGS.md](docs/FINDINGS.md)
-for what measurement has turned up so far.
+**Status: market data, strategy and authentication are built and measured. No order has
+ever been sent.** See [docs/PLAN.md](docs/PLAN.md) for the roadmap and
+[docs/FINDINGS.md](docs/FINDINGS.md) for what measurement has turned up so far.
 
 ---
 
@@ -112,13 +112,20 @@ sanitizers.
 | `sym_scan` | two-stage ranking of every perpetual by spread, affordability and activity |
 | `md_record` | long-running capture with reconnect and file rotation |
 | `md_replay` | replays a capture through the live decode path |
+| `backtest` | runs the quoter and fill simulator over a capture |
+| `keygen` | creates an Ed25519 key pair; prints only the public half |
+| `auth_check` | proves a credential works over REST and the websocket api |
 
 ```bash
 ./build/release/lat_probe 30
 ./build/release/sym_scan --secs 30 --deep-secs 60 --budget 20 --csv out.csv
 ./build/release/md_record --symbols TACUSDT,CFGUSDT --out data/md --rotate-mins 60
 ./build/release/md_replay data/md-*.mdlog
+./build/release/backtest data/md-*.mdlog --symbol TACUSDT
 ```
+
+Every tool defaults to the demo environment for trading and to the real market for
+reading; `LLT_BINANCE_ENV=production` is the only way to send an order for real.
 
 ## Measured performance
 
