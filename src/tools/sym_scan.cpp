@@ -263,9 +263,9 @@ int main(int argc, char** argv) {
     Collector deep;
     if (!sample_streams(deep_streams, opt.deep_secs, deep)) return 1;
 
-    std::printf("\n%-14s %10s %9s %9s %8s %9s %9s\n", "symbol", "spread_bps", "p90_bps",
-                "edge_bps", "quotes/s", "trades/m", "margin");
-    std::printf("%s\n", std::string(74, '-').c_str());
+    std::printf("\n%-14s %10s %9s %9s %8s %8s %9s %9s\n", "symbol", "spread_bps",
+                "p90_bps", "tick_bps", "ticks", "quotes/s", "trades/m", "edge*tpm");
+    std::printf("%s\n", std::string(82, '-').c_str());
 
     struct DeepRow {
         std::string symbol;
@@ -275,6 +275,9 @@ int main(int argc, char** argv) {
         double      qps = 0.0;
         double      tpm = 0.0;
         double      margin = 0.0;
+        double      tick_bps = 0.0;
+        double      ticks    = 0.0;
+        double      flow     = 0.0;  // edge available per minute, before any fill rate
     };
 
     std::vector<DeepRow> deep_rows;
@@ -290,6 +293,15 @@ int main(int argc, char** argv) {
         d.qps    = static_cast<double>(it->second.quotes) / static_cast<double>(opt.deep_secs);
         d.tpm = static_cast<double>(it->second.trades) * 60.0 / static_cast<double>(opt.deep_secs);
 
+        // A spread cannot be narrower than one tick, so a tick that is coarse relative
+        // to the price produces a wide spread in basis points with no room inside it.
+        const auto inst = by_name.find(name);
+        if (inst != by_name.end() && it->second.mid > 0.0) {
+            d.tick_bps = inst->second->tick_size.to_double() / it->second.mid * 1e4;
+            if (d.tick_bps > 0.0) d.ticks = d.med / d.tick_bps;
+        }
+        d.flow = d.edge * d.tpm;
+
         for (const auto& r : rows) {
             if (r.symbol == name) {
                 d.margin = r.margin_needed;
@@ -299,12 +311,14 @@ int main(int argc, char** argv) {
         deep_rows.push_back(d);
     }
 
+    // Ranking by spread alone selects the most broken books. What a maker can earn is
+    // bounded by both the edge and how often the symbol prints.
     std::sort(deep_rows.begin(), deep_rows.end(),
-              [](const DeepRow& a, const DeepRow& b) { return a.edge > b.edge; });
+              [](const DeepRow& a, const DeepRow& b) { return a.flow > b.flow; });
 
     for (const auto& d : deep_rows) {
-        std::printf("%-14s %10.3f %9.3f %9.3f %8.2f %9.1f %9.2f\n", d.symbol.c_str(), d.med,
-                    d.p90, d.edge, d.qps, d.tpm, d.margin);
+        std::printf("%-14s %10.3f %9.3f %9.3f %8.1f %8.2f %9.1f %9.0f\n", d.symbol.c_str(),
+                    d.med, d.p90, d.tick_bps, d.ticks, d.qps, d.tpm, d.flow);
     }
 
     size_t still_good = 0;
@@ -313,6 +327,8 @@ int main(int argc, char** argv) {
     std::printf("\n%zu of %zu survive the deeper measurement\n", still_good,
                 deep_rows.size());
     std::printf("a wide spread is payment for inventory risk, not free money.\n");
+    std::printf("ticks is the spread in tick sizes: at 1.0 the book is already as tight\n");
+    std::printf("as the venue allows, and a wide spread_bps only means a coarse tick.\n");
     std::printf("trades/m is the ceiling on fills: a symbol that prints twice a minute\n");
     std::printf("cannot fill a two-sided quote often enough to matter.\n");
 
