@@ -36,21 +36,56 @@ file is preserved across reinstalls.
 
 ## Checking on it
 
+Once a day is enough. The recorder is silent in steady state by design - it logs only
+connections, rotations and errors, because a recorder that logged every message would
+produce more log than data.
+
 ```bash
-systemctl status llt-record
-journalctl -u llt-record -n 50 --no-pager
-ls -lh ~/data | tail
-df -h /
+./deploy/healthcheck.sh
 ```
 
-Reconnects are normal and appear in the journal; the venue drops long-lived
-connections. What matters is that files keep appearing and the disk is not filling
-faster than projected.
+```
+== service ==
+  state     active since Wed 2026-10-28 11:39:37 UTC
+  restarts  0
 
-To inspect what was actually captured:
+== today ==
+  connections  1
+  drops/errors 0
+
+== capture ==
+  files     7
+  on disk   94M
+  newest    md-20261028-170000.mdlog (written 1s ago, 12M)
+
+== disk ==
+  2.1G used of 59G, 57G free (4%)
+
+== verdict ==
+  healthy
+```
+
+A handful of reconnects a day is normal: the venue cycles long-lived connections. The
+numbers worth reacting to are a stalled feed, a service that is not running, or
+reconnects in the dozens.
+
+For detail when something looks wrong:
 
 ```bash
+journalctl -u llt-record -n 50 --no-pager
 ./build/release/md_replay ~/data/md-*.mdlog
+```
+
+`md_replay` on the file currently being written will report a truncated tail. That is
+expected - the recorder is mid-write. On a rotated file it would mean real damage.
+
+## Backup
+
+Captures live only on this instance. EBS is durable, but terminating the instance with
+"delete on termination" set takes the data with it.
+
+```bash
+rsync -avz --ignore-existing ubuntu@<elastic-ip>:~/data/*.gz ./data/
 ```
 
 ## Updating
