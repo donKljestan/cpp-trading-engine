@@ -69,12 +69,16 @@ target_link_libraries(md_record PRIVATE llt_core)
 add_executable(md_replay src/tools/md_replay.cpp)
 target_link_libraries(md_replay PRIVATE llt_core)
 
+add_executable(backtest src/tools/backtest.cpp)
+target_link_libraries(backtest PRIVATE llt_core)
+
 # LTO pays off in the hot path but breaks sanitizer symbolisation, so keep them apart.
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT LLT_SANITIZER)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT LLT_IPO_OK OUTPUT LLT_IPO_MSG)
     if(LLT_IPO_OK)
         set_property(TARGET llt_core llt_bot md_dump lat_probe sym_scan md_record md_replay
+                     backtest
                      PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
 endif()
@@ -91,6 +95,7 @@ if(LLT_BUILD_TESTS)
         tests/test_bn_rest.cpp
         tests/test_record.cpp
         tests/test_signals.cpp
+        tests/test_quoter.cpp
     )
     target_include_directories(llt_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(llt_tests PRIVATE llt_core)
