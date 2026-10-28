@@ -8,7 +8,7 @@
 //   backtest FILE.mdlog [...] [--symbol TACUSDT] [--sweep]
 //            [--qty 50] [--max-pos 200] [--fee-bps 4] [--buffer-bps 1]
 //            [--vol-mult 1.0] [--gamma 1.0] [--horizon-s 5] [--latency-us 2000]
-//            [--env production|demo]
+//            [--requote-ticks 1] [--requote-ms 100] [--env production|demo]
 
 #include <algorithm>
 #include <cstdio>
@@ -40,6 +40,8 @@ struct Options {
     double      gamma      = 1.0;
     double      horizon_s  = 5.0;
     uint64_t    latency_us = 2000;
+    int64_t     requote_ticks = 1;
+    uint64_t    requote_ms    = 100;
 
     std::vector<std::string> files;
 };
@@ -72,6 +74,10 @@ Options parse_args(int argc, char** argv) {
             o.horizon_s = std::strtod(next(), nullptr);
         } else if (a == "--latency-us") {
             o.latency_us = static_cast<uint64_t>(std::strtoull(next(), nullptr, 10));
+        } else if (a == "--requote-ticks") {
+            o.requote_ticks = static_cast<int64_t>(std::strtoll(next(), nullptr, 10));
+        } else if (a == "--requote-ms") {
+            o.requote_ms = static_cast<uint64_t>(std::strtoull(next(), nullptr, 10));
         } else if (!a.starts_with("--")) {
             o.files.emplace_back(a);
         }
@@ -160,10 +166,14 @@ struct Result {
     double               fees       = 0.0;
     double               net        = 0.0;
     double               adverse_1s = 0.0;
+    // Gross edge per unit traded. This, not the PnL line, is what has to clear the
+    // per-side fee: cents of PnL depend on size, bps of capture do not.
+    double capture_bps = 0.0;
+    double blocked_pct = 0.0;
 };
 
 Result run(const std::vector<Frame>& frames, const llt::strat::SimConfig& cfg,
-           const llt::Symbol& symbol) {
+           const llt::Symbol& symbol, double mid) {
     llt::strat::Simulator   sim(cfg);
     SymbolFilter            filter{symbol, &sim};
     llt::binance::FeedStats stats;
@@ -182,6 +192,12 @@ Result run(const std::vector<Frame>& frames, const llt::strat::SimConfig& cfg,
     if (r.stats.adverse_1s_n > 0) {
         r.adverse_1s =
             r.stats.adverse_1s_bps / static_cast<double>(r.stats.adverse_1s_n);
+    }
+    const double traded = r.stats.volume.to_double() * mid;
+    if (traded > 0.0) r.capture_bps = (r.realised + r.open) / traded * 10'000.0;
+    if (r.stats.trades_reaching_quote > 0) {
+        r.blocked_pct = 100.0 * static_cast<double>(r.stats.blocked_by_queue) /
+                        static_cast<double>(r.stats.trades_reaching_quote);
     }
     return r;
 }
@@ -271,6 +287,8 @@ int main(int argc, char** argv) {
     cfg.quoter.vol_multiplier  = opt.vol_mult;
     cfg.quoter.inventory_gamma = opt.gamma;
     cfg.quoter.vol_horizon_s   = opt.horizon_s;
+    cfg.quoter.min_requote_ticks = opt.requote_ticks;
+    cfg.quoter.min_requote_ms    = opt.requote_ms;
 
     std::vector<Frame> frames;
     if (!load_frames(opt.files, opt.symbol, frames)) return 1;
@@ -278,22 +296,31 @@ int main(int argc, char** argv) {
     const llt::Symbol symbol(opt.symbol);
 
     if (opt.sweep) {
+        const double fee_side = opt.fee_bps / 2.0;
         std::printf("\n%s  sweep over %zu frames, quote size %.6g\n", opt.symbol.c_str(),
                     frames.size(), cfg.quoter.order_qty.to_double());
-        std::printf("%8s %9s %8s %10s %10s %11s\n", "buffer", "vol_mult", "fills",
-                    "net USDT", "fees", "adv_1s_bps");
-        std::printf("%s\n", std::string(62, '-').c_str());
+        std::printf("capture must clear %.1f bps per fill to pay the fee\n\n", fee_side);
+        std::printf("%7s %5s %6s %9s %7s %8s %10s %8s %8s\n", "buffer", "vol", "ticks",
+                    "requotes", "fills", "cap_bps", "net USDT", "adv_1s", "blocked%");
+        std::printf("%s\n", std::string(79, '-').c_str());
 
-        for (const double buffer : {0.5, 1.0, 2.0, 4.0, 8.0}) {
-            for (const double vm : {0.0, 1.0, 2.0, 4.0}) {
-                llt::strat::SimConfig c = cfg;
-                c.quoter.edge_buffer_bps = buffer;
-                c.quoter.vol_multiplier  = vm;
+        for (const double buffer : {1.0, 2.0, 4.0, 8.0}) {
+            for (const double vm : {0.0, 2.0}) {
+                // Every price change surrenders queue position, so how reluctant the
+                // quoter is to move is a strategy parameter, not a detail.
+                for (const int64_t ticks : {int64_t{1}, int64_t{8}, int64_t{64}}) {
+                    llt::strat::SimConfig c   = cfg;
+                    c.quoter.edge_buffer_bps  = buffer;
+                    c.quoter.vol_multiplier   = vm;
+                    c.quoter.min_requote_ticks = ticks;
 
-                const Result r = run(frames, c, symbol);
-                std::printf("%8.1f %9.1f %8lu %10.4f %10.4f %11.3f\n", buffer, vm,
-                            static_cast<unsigned long>(r.stats.fills), r.net, r.fees,
-                            r.adverse_1s);
+                    const Result r = run(frames, c, symbol, mid);
+                    std::printf("%7.1f %5.1f %6ld %9lu %7lu %8.2f %10.4f %8.2f %8.1f\n",
+                                buffer, vm, static_cast<long>(ticks),
+                                static_cast<unsigned long>(r.stats.requotes),
+                                static_cast<unsigned long>(r.stats.fills), r.capture_bps,
+                                r.net, r.adverse_1s, r.blocked_pct);
+                }
             }
         }
         std::printf("\nwider quotes mean fewer fills; the question is whether what is\n");
@@ -301,7 +328,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    const Result r     = run(frames, cfg, symbol);
+    const Result r     = run(frames, cfg, symbol, mid);
     const auto&  st    = r.stats;
     const double hours = static_cast<double>(st.total_ns) / 3.6e12;
 
@@ -310,8 +337,11 @@ int main(int argc, char** argv) {
     std::printf("quote size %.6g  max position %.6g  latency %lu us\n",
                 cfg.quoter.order_qty.to_double(), opt.max_pos,
                 static_cast<unsigned long>(opt.latency_us));
-    std::printf("fees %.1f bps round trip, buffer %.1f, vol x%.2f, gamma %.2f\n\n",
+    std::printf("fees %.1f bps round trip, buffer %.1f, vol x%.2f, gamma %.2f\n",
                 opt.fee_bps, opt.buffer_bps, opt.vol_mult, opt.gamma);
+    std::printf("requote after %ld tick(s) and %lu ms\n\n",
+                static_cast<long>(opt.requote_ticks),
+                static_cast<unsigned long>(opt.requote_ms));
 
     std::printf("fills            %lu  (%lu bid / %lu ask)\n",
                 static_cast<unsigned long>(st.fills),
@@ -330,6 +360,8 @@ int main(int argc, char** argv) {
     std::printf("fees            %-.6f\n", r.fees);
     std::printf("gross           %+.6f   (before fees)\n", r.realised + r.open);
     std::printf("net             %+.6f USDT\n", r.net);
+    std::printf("capture         %+.2f bps per fill  (needs %.1f to pay the fee)\n",
+                r.capture_bps, opt.fee_bps / 2.0);
 
     std::printf("\nadverse selection (mid drift after a fill, + is in our favour)\n");
     if (st.adverse_100ms_n > 0) {
@@ -342,15 +374,20 @@ int main(int argc, char** argv) {
                     static_cast<unsigned long>(st.adverse_1s_n));
     }
 
-    if (st.fills == 0) {
-        std::printf("\nno fills. diagnosis:\n");
-        std::printf("  trades reaching our price   %lu\n",
-                    static_cast<unsigned long>(st.trades_reaching_quote));
-        std::printf("  of those, blocked by queue  %lu\n",
-                    static_cast<unsigned long>(st.blocked_by_queue));
-        std::printf("  last queue ahead of us      %.6g\n", st.last_queue_ahead);
-        std::printf("  quote suppressed by guards  %lu times\n",
-                    static_cast<unsigned long>(st.quote_suppressed));
+    // Printed always, not only when there were no fills at all: a strategy that fills
+    // only when a trade clears the whole queue ahead of it is being selected against,
+    // and that shows up here long before it shows up in the PnL.
+    std::printf("\nqueue\n");
+    std::printf("  trades reaching our price   %lu\n",
+                static_cast<unsigned long>(st.trades_reaching_quote));
+    std::printf("  of those, blocked by queue  %lu  (%.1f%%)\n",
+                static_cast<unsigned long>(st.blocked_by_queue), r.blocked_pct);
+    std::printf("  last queue ahead of us      %.6g\n", st.last_queue_ahead);
+    std::printf("  quote suppressed by guards  %lu times\n",
+                static_cast<unsigned long>(st.quote_suppressed));
+    if (st.fills > 0) {
+        std::printf("  requotes per fill           %.1f\n",
+                    static_cast<double>(st.requotes) / static_cast<double>(st.fills));
     }
 
     return 0;
