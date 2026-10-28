@@ -90,6 +90,7 @@ if(LLT_BUILD_TESTS)
         tests/test_bn_parse.cpp
         tests/test_bn_rest.cpp
         tests/test_record.cpp
+        tests/test_signals.cpp
     )
     target_include_directories(llt_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(llt_tests PRIVATE llt_core)

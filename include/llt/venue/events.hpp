@@ -23,6 +23,13 @@ struct EventTime {
     uint64_t exchange_ms = 0;
     uint64_t transact_ms = 0;
     uint64_t recv_tsc    = 0;
+
+    // Market time, from the matching engine rather than from this machine. Signals use
+    // it so a replay produces the same numbers on any host, at any speed.
+    [[nodiscard]] uint64_t market_ns() const noexcept {
+        const uint64_t ms = (transact_ms != 0) ? transact_ms : exchange_ms;
+        return ms * uint64_t{1'000'000};
+    }
 };
 
 // Best bid and offer. Binance pushes this on every top-of-book change rather than on a
