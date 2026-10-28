@@ -44,6 +44,22 @@ produce more log than data.
 ./deploy/healthcheck.sh
 ```
 
+`daily.sh` is the one to run while a capture is in progress, keeping its output:
+
+```bash
+./deploy/daily.sh >> ~/daily.log 2>&1
+tail -40 ~/daily.log
+```
+
+It reports over the last day rather than the whole run, because a per-day series shows
+whether a result persists where a cumulative figure hides it. Captures older than an
+hour are gzipped and the backtest reads plain files, so the day's data is decompressed
+into scratch and deleted afterwards.
+
+Three things are worth reading, and only the third cannot be recovered later: the
+recorder is active, the disk is not filling, and every configured symbol actually
+appeared in the capture. The PnL ranking is noise for the first week.
+
 ```
 == service ==
   state     active since Wed 2026-10-28 11:39:37 UTC
