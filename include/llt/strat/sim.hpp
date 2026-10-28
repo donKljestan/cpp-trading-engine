@@ -6,9 +6,11 @@
 // written down here rather than buried:
 //
 //   * Our order never moves the market. At $5 of notional this is close to true.
-//   * Queue position improves only when trades consume the orders ahead of us. Real
-//     queues also shrink through cancellations we cannot observe, so this model fills
-//     LESS often than reality. Pessimistic, which is the safe direction to be wrong in.
+//   * Queue position improves when trades consume the orders ahead of us, and when
+//     those orders are cancelled. Cancellations are not observable in this feed, so
+//     they are modelled as exponential decay at `queue_decay_per_s`. Left at zero the
+//     model fills LESS often than reality; the parameter exists so that assumption
+//     can be tested instead of believed.
 //   * Price levels are taken from depth snapshots 100 ms apart, so a queue estimate
 //     can be that stale.
 //   * Anything resting below the deepest visible level is treated as unfillable.
@@ -16,6 +18,7 @@
 //   * Orders are assumed to join the back of the queue at their price, which is
 //     correct for a new order and the reason a requote is expensive.
 
+#include <cmath>
 #include <cstdint>
 #include <deque>
 
@@ -33,6 +36,10 @@ struct SimConfig {
     SignalConfig signals;
 
     double maker_fee_bps = 2.0;  // per side
+
+    // Fraction of the queue ahead of us that is cancelled per second. Zero reproduces
+    // the trades-only model; 1.0 means roughly two thirds of it leaves each second.
+    double queue_decay_per_s = 0.0;
 
     // One way. A decision taken now reaches the matching engine this much later.
     uint64_t latency_ns = 2'000'000;
@@ -151,7 +158,25 @@ private:
         return Fixed{kUnfillable};
     }
 
+    // Orders ahead of us leave by being cancelled, not only by trading. Applied lazily
+    // at the moment the queue is read, which is the only moment it matters.
+    void decay_queue(Side side, uint64_t now) noexcept {
+        Fixed&    ahead = (side == Side::Buy) ? bid_ahead_ : ask_ahead_;
+        uint64_t& since = (side == Side::Buy) ? bid_queue_ns_ : ask_queue_ns_;
+
+        if (cfg_.queue_decay_per_s <= 0.0 || ahead.raw <= 0 || since == 0 || now <= since) {
+            since = now;
+            return;
+        }
+        const double dt_s = static_cast<double>(now - since) / 1e9;
+        since             = now;
+        const double survive = std::exp(-cfg_.queue_decay_per_s * dt_s);
+        ahead.raw = static_cast<int64_t>(static_cast<double>(ahead.raw) * survive);
+    }
+
     void consume(Side side, Fixed incoming, uint64_t now) noexcept {
+        decay_queue(side, now);
+
         Fixed& ahead     = (side == Side::Buy) ? bid_ahead_ : ask_ahead_;
         Fixed& remaining = (side == Side::Buy) ? bid_left_ : ask_left_;
         const Fixed px   = (side == Side::Buy) ? live_.bid_px : live_.ask_px;
@@ -224,12 +249,14 @@ private:
 
         // Keeping the same price keeps the queue slot; changing it goes to the back.
         if (!live_.bid_active || pending_.bid_px.raw != live_.bid_px.raw) {
-            bid_ahead_ = queue_ahead(Side::Buy, pending_.bid_px);
-            bid_left_  = pending_.qty;
+            bid_ahead_    = queue_ahead(Side::Buy, pending_.bid_px);
+            bid_left_     = pending_.qty;
+            bid_queue_ns_ = now;
         }
         if (!live_.ask_active || pending_.ask_px.raw != live_.ask_px.raw) {
-            ask_ahead_ = queue_ahead(Side::Sell, pending_.ask_px);
-            ask_left_  = pending_.qty;
+            ask_ahead_    = queue_ahead(Side::Sell, pending_.ask_px);
+            ask_left_     = pending_.qty;
+            ask_queue_ns_ = now;
         }
         if (!pending_.bid_active) bid_left_ = Fixed{};
         if (!pending_.ask_active) ask_left_ = Fixed{};
@@ -279,6 +306,8 @@ private:
     Fixed ask_ahead_{};
     Fixed bid_left_{};
     Fixed ask_left_{};
+    uint64_t bid_queue_ns_ = 0;
+    uint64_t ask_queue_ns_ = 0;
 
     uint64_t last_ns_        = 0;
     uint64_t last_change_ns_ = 0;

@@ -5,10 +5,11 @@
 // moves against a fill in the second after it happens, the quotes are being picked off
 // and no parameter tuning fixes that.
 //
-//   backtest FILE.mdlog [...] [--symbol TACUSDT] [--sweep]
+//   backtest FILE.mdlog [...] [--symbol TACUSDT] [--sweep] [--sweep-queue]
 //            [--qty 50] [--max-pos 200] [--fee-bps 4] [--buffer-bps 1]
 //            [--vol-mult 1.0] [--gamma 1.0] [--horizon-s 5] [--latency-us 2000]
-//            [--requote-ticks 1] [--requote-ms 100] [--env production|demo]
+//            [--requote-ticks 1] [--requote-ms 100] [--queue-decay 0]
+//            [--env production|demo]
 
 #include <algorithm>
 #include <cstdio>
@@ -32,6 +33,7 @@ struct Options {
     // the demo book lists fewer symbols and would simply not have some of them.
     std::string env        = "production";
     bool        sweep      = false;
+    bool        sweep_queue = false;
     double      qty        = 0.0;
     double      max_pos    = 0.0;
     double      fee_bps    = 4.0;
@@ -42,6 +44,7 @@ struct Options {
     uint64_t    latency_us = 2000;
     int64_t     requote_ticks = 1;
     uint64_t    requote_ms    = 100;
+    double      queue_decay   = 0.0;
 
     std::vector<std::string> files;
 };
@@ -58,6 +61,10 @@ Options parse_args(int argc, char** argv) {
             o.env = next();
         } else if (a == "--sweep") {
             o.sweep = true;
+        } else if (a == "--sweep-queue") {
+            o.sweep_queue = true;
+        } else if (a == "--queue-decay") {
+            o.queue_decay = std::strtod(next(), nullptr);
         } else if (a == "--qty") {
             o.qty = std::strtod(next(), nullptr);
         } else if (a == "--max-pos") {
@@ -289,11 +296,41 @@ int main(int argc, char** argv) {
     cfg.quoter.vol_horizon_s   = opt.horizon_s;
     cfg.quoter.min_requote_ticks = opt.requote_ticks;
     cfg.quoter.min_requote_ms    = opt.requote_ms;
+    cfg.queue_decay_per_s        = opt.queue_decay;
 
     std::vector<Frame> frames;
     if (!load_frames(opt.files, opt.symbol, frames)) return 1;
 
     const llt::Symbol symbol(opt.symbol);
+
+    if (opt.sweep_queue) {
+        // The trades-only queue model is known to be pessimistic. This asks how wrong
+        // it would have to be before the strategy pays for itself.
+        const double fee_side = opt.fee_bps / 2.0;
+        std::printf("\n%s  queue-decay sensitivity over %zu frames\n", opt.symbol.c_str(),
+                    frames.size());
+        std::printf("capture must clear %.1f bps per fill to pay the fee\n", fee_side);
+        std::printf("decay is the fraction of the queue ahead cancelled per second\n\n");
+        std::printf("%7s %8s %8s %8s %10s %8s %9s\n", "decay", "buffer", "fills",
+                    "cap_bps", "net USDT", "adv_1s", "blocked%");
+        std::printf("%s\n", std::string(64, '-').c_str());
+
+        for (const double decay : {0.0, 0.5, 2.0, 8.0, 32.0}) {
+            for (const double buffer : {1.0, 2.0, 4.0}) {
+                llt::strat::SimConfig c  = cfg;
+                c.queue_decay_per_s      = decay;
+                c.quoter.edge_buffer_bps = buffer;
+
+                const Result r = run(frames, c, symbol, mid);
+                std::printf("%7.1f %8.1f %8lu %8.2f %10.4f %8.2f %9.1f\n", decay, buffer,
+                            static_cast<unsigned long>(r.stats.fills), r.capture_bps,
+                            r.net, r.adverse_1s, r.blocked_pct);
+            }
+        }
+        std::printf("\nif capture only clears the fee at an implausible decay rate, the\n");
+        std::printf("pessimism of the fill model is not what is holding the strategy back.\n");
+        return 0;
+    }
 
     if (opt.sweep) {
         const double fee_side = opt.fee_bps / 2.0;
@@ -339,9 +376,10 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long>(opt.latency_us));
     std::printf("fees %.1f bps round trip, buffer %.1f, vol x%.2f, gamma %.2f\n",
                 opt.fee_bps, opt.buffer_bps, opt.vol_mult, opt.gamma);
-    std::printf("requote after %ld tick(s) and %lu ms\n\n",
+    std::printf("requote after %ld tick(s) and %lu ms\n",
                 static_cast<long>(opt.requote_ticks),
                 static_cast<unsigned long>(opt.requote_ms));
+    std::printf("queue decay %.2f/s\n\n", opt.queue_decay);
 
     std::printf("fills            %lu  (%lu bid / %lu ask)\n",
                 static_cast<unsigned long>(st.fills),
