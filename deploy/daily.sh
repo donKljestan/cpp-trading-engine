@@ -5,18 +5,20 @@
 # afterwards: the recorder is running, the disk is not filling, and every symbol we
 # think we are capturing actually appeared.
 #
-# Measured over the last day rather than the whole run, because a per-day series shows
-# whether a result is persistent, which a cumulative figure hides. Captures older than
-# an hour are gzipped, so the day's files are decompressed into scratch and thrown away.
+# Measured over what has arrived since the previous run rather than a fixed window, so
+# running late shortens nothing and running twice measures nothing twice. Captures
+# older than an hour are gzipped, so the period's files are decompressed into scratch
+# and thrown away.
 #
-#   deploy/daily.sh [>> ~/daily.log]
+#   deploy/daily.sh >> ~/daily.log 2>&1
 
 set -uo pipefail
 
 REPO="${LLT_REPO:-$HOME/cpp-trading-engine}"
 DATA="${LLT_DATA_DIR:-$HOME/data}"
 ENV_FILE="${LLT_ENV_FILE:-/etc/llt/record.env}"
-HOURS="${LLT_DAILY_HOURS:-25}"
+STAMP="${LLT_DAILY_STAMP:-$HOME/.llt-daily-stamp}"
+HOURS="${LLT_DAILY_HOURS:-25}"  # only used the first time, before a stamp exists
 CANCEL_PER_TRADE="${LLT_CANCEL_PER_TRADE:-6}"
 BUFFER_BPS="${LLT_BUFFER_BPS:-2}"
 
@@ -26,37 +28,20 @@ echo "================================================================"
 echo "llt daily  $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 echo "================================================================"
 
-# ---------------------------------------------------------------- 1. is it running
+"$REPO/deploy/healthcheck.sh" "$DATA"
 
-state=$(systemctl is-active llt-record 2>/dev/null || true)
-echo "recorder        $state"
-if [[ "$state" != "active" ]]; then
-    echo "  !! not running. sudo systemctl restart llt-record"
-    systemctl status llt-record --no-pager --lines 5 2>&1 | sed 's/^/  /'
+# ------------------------------------------------- did every symbol show up
+
+if [[ -f "$STAMP" ]]; then
+    echo -e "\n== since $(date -u -r "$STAMP" '+%Y-%m-%d %H:%M UTC') =="
+    mapfile -t recent < <(find "$DATA" -name 'md-*.mdlog*' -newer "$STAMP" | sort)
+else
+    echo -e "\n== last ${HOURS}h (no previous run recorded) =="
+    mapfile -t recent < <(find "$DATA" -name 'md-*.mdlog*' -mmin "-$(( HOURS * 60 ))" | sort)
 fi
 
-# ------------------------------------------------------------------- 2. is it fed
-
-avail_kb=$(df --output=avail -k "$DATA" | tail -1 | tr -d ' ')
-avail_gb=$(( avail_kb / 1024 / 1024 ))
-echo "disk free       ${avail_gb} G"
-[[ "$avail_gb" -lt 10 ]] && echo "  !! under 10 G. sudo systemctl start llt-compress.service"
-
-echo "captured        $(du -sh "$DATA" 2>/dev/null | cut -f1) in $(find "$DATA" -name 'md-*' | wc -l) files"
-
-newest=$(find "$DATA" -name 'md-*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
-if [[ -n "$newest" ]]; then
-    age_min=$(( ( $(date +%s) - $(stat -c %Y "$newest") ) / 60 ))
-    echo "newest file     ${age_min} min old"
-    [[ "$age_min" -gt 90 ]] && echo "  !! nothing written in over 90 minutes"
-fi
-
-# ------------------------------------------------- 3. did every symbol show up
-
-mapfile -t recent < <(find "$DATA" -name 'md-*.mdlog*' -mmin "-$(( HOURS * 60 ))" | sort)
 if [[ "${#recent[@]}" -eq 0 ]]; then
-    echo
-    echo "no captures in the last ${HOURS}h; nothing to measure"
+    echo "  nothing new to measure"
     exit 0
 fi
 
@@ -70,8 +55,7 @@ for src in "${recent[@]}"; do
     esac
 done
 
-echo
-echo "last ${HOURS}h: ${#recent[@]} files, $(du -sh "$WORK" | cut -f1) decompressed"
+echo "  ${#recent[@]} files, $(du -sh "$WORK" | cut -f1) decompressed"
 echo
 
 # A symbol with no fills is absent from the ranking even when it is being captured, so
@@ -91,11 +75,14 @@ if [[ -r "$ENV_FILE" ]]; then
     fi
 fi
 
-# ------------------------------------------------------------------ 4. the ranking
+# ------------------------------------------------------------------ the ranking
 
 echo
 "$BACKTEST" "$WORK"/*.mdlog --all \
     --cancel-per-trade "$CANCEL_PER_TRADE" --buffer-bps "$BUFFER_BPS"
+
+# Only now, so a run that died partway measures the same period again next time.
+touch "$STAMP"
 
 echo
 echo "ignore the PnL for the first week: a few hundred fills swing day to day."
