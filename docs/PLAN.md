@@ -29,7 +29,7 @@ as the signal that it works rather than the goal.
 | **F3.5** | Continuous capture from Tokyo | Which strategy, decided from data? | running |
 | **F4** | Signals, quoter, backtest over replay | Positive expectancy in replay? | built, awaiting data |
 | **F5** | Ed25519 WebSocket API, order manager | - | in progress |
-| **F6** | Risk engine, dead-man switch, chaos tests | - | pending |
+| **F6** | Risk engine, dead-man switch, chaos tests | - | limits built, chaos tests pending |
 | **F7** | Live smoke test, $20, one symbol | Does live agree with replay? | pending |
 | **F8** | Scale | Only if F4 and F7 agree | pending |
 
@@ -198,14 +198,31 @@ crossing and paying taker fees), `order.modify`, batch operations. User data str
 explicit state machine, reconciled against REST. Token-bucket rate limiting applied
 before sending rather than after rejection.
 
-## F6 - Risk · pending, blocks all real money
+## F6 - Risk · limits built, chaos tests pending
 
-`countdownCancelAll` as a dead-man switch, refreshed every few seconds, so that a
-crashed process or severed link causes the venue itself to cancel everything. Pre-trade
-limits on position, notional and price sanity against mark price. Stale-data watchdog.
-Daily loss limit that flattens and halts. Kill switch.
+Built. The layer separates two things that are usually conflated. A *veto* refuses one
+order and clears itself when the cause goes away. A *halt* latches and only an operator
+clears it, because a limit that can un-trip itself will un-trip at the worst possible
+moment - an unrealised bounce makes equity look survivable and trading resumes exactly
+when it is least likely to be right.
 
-Chaos tests: `kill -9`, severed network, websocket disconnect, system clock jump.
+Vetoes: position and notional ceilings measured against the position the order *would
+create* rather than the one held, per-order notional, price sanity band, stale feed.
+A stale feed also pulls resting orders, since those are priced off a book we can no
+longer see. Halts: loss limit counted on equity including open positions, reject storm,
+kill switch, feed gone past a minute.
+
+A default-constructed `RiskConfig` permits nothing - zero means deny, not unlimited, so
+a config nobody filled in stops the engine instead of waving it through.
+
+The dead-man switch is the only protection that survives the engine dying; everything
+else assumes we are alive to enforce it. `countdownCancelAll` holds a timer at the
+venue that we refresh at a third of its length, so two consecutive missed refreshes are
+needed before a healthy book is flattened. The kill switch is a file, so stopping
+trading needs nothing but SSH and survives a restart.
+
+Still pending: wiring the transport, and chaos tests - `kill -9`, severed network,
+websocket disconnect, system clock jump.
 
 ## F7 - Live smoke test · pending
 

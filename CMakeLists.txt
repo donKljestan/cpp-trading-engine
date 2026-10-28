@@ -49,6 +49,7 @@ add_library(llt_core STATIC
     src/net/tls.cpp
     src/net/http.cpp
     src/net/ws.cpp
+    src/risk/kill_switch.cpp
     src/venue/binance/bn_env.cpp
     src/venue/binance/bn_rest.cpp
 )
@@ -110,6 +111,7 @@ if(LLT_BUILD_TESTS)
         tests/test_order_manager.cpp
         tests/test_user_stream.cpp
         tests/test_order_gateway.cpp
+        tests/test_risk.cpp
     )
     target_include_directories(llt_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(llt_tests PRIVATE llt_core)

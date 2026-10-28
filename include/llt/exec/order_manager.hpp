@@ -18,7 +18,7 @@ namespace llt::exec {
 
 inline constexpr size_t kMaxOrders = 64;
 
-// "llt<slot:03>_<seq:012>" — 19 characters, inside the venue's 36-character limit and
+// "llt<slot:03>_<seq:012>" - 19 characters, inside the venue's 36-character limit and
 // its allowed character set.
 inline constexpr size_t kClientIdLen = 19;
 
