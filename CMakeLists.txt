@@ -42,6 +42,7 @@ add_library(llt_core STATIC
     src/core/clock.cpp
     src/core/cpu.cpp
     src/exec/signer.cpp
+    src/exec/user_stream.cpp
     src/exec/ws_api.cpp
     src/md/record.cpp
     src/net/tcp.cpp
@@ -107,6 +108,7 @@ if(LLT_BUILD_TESTS)
         tests/test_quoter.cpp
         tests/test_signer.cpp
         tests/test_order_manager.cpp
+        tests/test_user_stream.cpp
     )
     target_include_directories(llt_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(llt_tests PRIVATE llt_core)

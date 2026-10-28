@@ -23,8 +23,14 @@ struct Fixed {
     [[nodiscard]] static constexpr Fixed from_int(int64_t v) noexcept { return Fixed{v * kFixedScale}; }
 
     // Only for config parsing and tests; never call this on a hot path.
+    //
+    // Rounds rather than truncates, because the binary expansion of a written decimal
+    // usually lands just below it: 0.0012 * 1e8 is 119999.99999999999, and truncation
+    // would silently turn it into a different number. Wire data goes through
+    // parse_fixed instead, which truncates deliberately so a price is never nudged up.
     [[nodiscard]] static constexpr Fixed from_double(double v) noexcept {
-        return Fixed{static_cast<int64_t>(v * static_cast<double>(kFixedScale))};
+        const double scaled = v * static_cast<double>(kFixedScale);
+        return Fixed{static_cast<int64_t>(scaled < 0 ? scaled - 0.5 : scaled + 0.5)};
     }
 
     [[nodiscard]] constexpr double to_double() const noexcept {
