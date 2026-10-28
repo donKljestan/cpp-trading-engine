@@ -106,6 +106,7 @@ if(LLT_BUILD_TESTS)
         tests/test_signals.cpp
         tests/test_quoter.cpp
         tests/test_signer.cpp
+        tests/test_order_manager.cpp
     )
     target_include_directories(llt_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(llt_tests PRIVATE llt_core)
