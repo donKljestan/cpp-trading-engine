@@ -21,23 +21,18 @@ Confirm the location was worth it before going further:
 
 Expect a p50 round trip in the low single-digit milliseconds and a verdict of
 `colocated` or `same region`. If it reports anything above 50 ms, the instance is not
-where it should be — check the region before debugging anything else.
+where it should be - check the region before debugging anything else.
 
 ## Recording as a service
 
 ```bash
-sudo mkdir -p /etc/llt
-printf 'LLT_SYMBOLS=TACUSDT,CFGUSDT,CVXUSDT,DATAIPUSDT,HANAUSDT\n' \
-  | sudo tee /etc/llt/record.env
-sudo chmod 600 /etc/llt/record.env
-
-sudo cp deploy/llt-record.service /etc/systemd/system/
-sudo cp deploy/llt-compress.service deploy/llt-compress.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-
-sudo systemctl enable --now llt-record.service
-sudo systemctl enable --now llt-compress.timer
+./deploy/install.sh
+sudo systemctl enable --now llt-record
 ```
+
+The install script resolves paths from the checkout, so the clone can live anywhere.
+To change the capture set, edit `/etc/llt/record.env` and restart the service; the
+file is preserved across reinstalls.
 
 ## Checking on it
 
@@ -66,7 +61,6 @@ git pull
 ./build.sh release
 sudo systemctl restart llt-record
 ```
-
 ## Known rough edge
 
 `md_replay` reads uncompressed captures only. Decompress first:

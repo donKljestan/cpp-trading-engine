@@ -5,16 +5,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/low_latency_trading
+User=@USER@
+WorkingDirectory=@REPO@
 
 # Symbols live here rather than in the unit so the capture set can change without
 # editing a file that is under version control.
 EnvironmentFile=/etc/llt/record.env
 
-ExecStart=/home/ubuntu/low_latency_trading/build/release/md_record \
+ExecStart=@REPO@/build/release/md_record \
     --symbols ${LLT_SYMBOLS} \
-    --out /home/ubuntu/data/md \
+    --out @DATA@/md \
     --rotate-mins 60
 
 # The recorder reconnects on its own; a restart here means it died outright.

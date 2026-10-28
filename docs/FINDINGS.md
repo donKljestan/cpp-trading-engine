@@ -1,7 +1,7 @@
 # Findings
 
 Measurements that changed a decision. Each entry records how it was measured, what came
-back, and what it implies — including the ones that were initially measured wrong.
+back, and what it implies - including the ones that were initially measured wrong.
 
 All data collected 2026-10-27 from Belgrade against Binance USDⓈ-M futures, using only
 public read-only endpoints.
@@ -22,7 +22,7 @@ min 0.0124   p50 0.0124   p90 0.0124   max 0.0124  (bps)
 about 1/320th of the fee. There is no latency improvement that closes a 320× gap.
 
 Affordability rules it out independently: BTCUSDT has `minQty` 0.001, so at ~$80,900 the
-smallest order is $80.80 of notional. A two-sided quote needs $161 — eight times the
+smallest order is $80.80 of notional. A two-sided quote needs $161 - eight times the
 available capital before leverage.
 
 This is the reference case the whole project is calibrated against.
@@ -56,7 +56,7 @@ Both subscription mechanisms behave identically. Using the live method, the venu
 ```
 
 **Implication.** The official documentation still lists `@aggTrade` as valid for
-USDⓈ-M futures and does **not** list `@trade` for futures at all — only for spot. The
+USDⓈ-M futures and does **not** list `@trade` for futures at all - only for spot. The
 documentation and the running system disagree.
 
 Trade flow now uses `@trade`, which is the better input anyway: prints are individual
@@ -76,7 +76,7 @@ switch subscription mechanism (rules out the URL form). The diagnostic switches
 
 **Method.** Subscribed `!bookTicker`, counted updates per symbol over 45 s.
 
-Every one of 523 symbols reported **exactly 0.200 updates per second** — one message per
+Every one of 523 symbols reported **exactly 0.200 updates per second** - one message per
 symbol per five seconds, about 80 messages per second across the entire market.
 
 ```
@@ -91,8 +91,8 @@ BTCUSDT alone produces roughly 240 updates per second on its dedicated stream.
 **Implication.** The number measured the stream's cadence, not the market's activity.
 A uniform value across every symbol was the tell: real markets are not uniform.
 
-The spread values themselves are correct — BTCUSDT's 0.0124 bps matches the dedicated
-stream exactly — but they come from only about nine samples per symbol.
+The spread values themselves are correct - BTCUSDT's 0.0124 bps matches the dedicated
+stream exactly - but they come from only about nine samples per symbol.
 
 This forced `sym_scan` into two stages: `!bookTicker` for a cheap wide sweep on spread
 and affordability, dedicated streams for the shortlist where activity actually matters.
@@ -105,7 +105,7 @@ and affordability, dedicated streams for the shortlist where activity actually m
 | --- | --- | --- |
 | TACUSDT | 51 trades/min | **11 trades/min** |
 | CFGUSDT | 42 trades/min | **79 trades/min** |
-| BTCUSDT | — | 1459 trades/min |
+| BTCUSDT | - | 1459 trades/min |
 
 **Implication.** A fivefold swing on TACUSDT between two samples a few minutes apart.
 One minute of observation does not characterise an illiquid symbol, so the F2 ranking is
@@ -132,7 +132,7 @@ Execution has to move to AWS `ap-northeast-1`.
 The 57 ms spread between p50 and p99 is consumer-internet jitter, and for quoting that
 is worse than the latency itself: unpredictable is harder to compensate than slow.
 
-**Implication on the clock.** The local clock sits 789 ms behind the venue — and it
+**Implication on the clock.** The local clock sits 789 ms behind the venue - and it
 *drifts*: an earlier measurement showed 622 ms. Roughly 170 ms of drift in twenty
 minutes, because WSL2 has no real-time clock and takes its time from the host.
 
@@ -140,6 +140,37 @@ A constant correction would therefore not work. This is why latency measurement 
 built NTP-style from the start: it derives both the round trip and the offset from the
 same exchange, and needs no disciplined local clock. The same property will matter on a
 fresh cloud instance before `chrony` has settled.
+
+## 5a. The same measurement from Tokyo
+
+**Method.** Identical tool, identical endpoint, run from a `t3.small` in AWS
+`ap-northeast-1` with `chrony` running.
+
+```
+rtt     min 3.192   p50 3.653   p90 4.911   p99 5.915   max 9.122   ms
+offset  min -0.746  p50 0.065   p90 0.514   p99 1.359   max 2.815   ms
+```
+
+|  | Belgrade | Tokyo | ratio |
+| --- | ---: | ---: | ---: |
+| rtt p50 | 261.3 ms | 3.65 ms | 72× |
+| rtt p99 | 318.0 ms | 5.92 ms | 54× |
+| jitter (p99 − p50) | 56.7 ms | 2.26 ms | 25× |
+| clock offset | 789 ms, drifting | 0.065 ms | - |
+
+**Implication.** The 25× reduction in jitter is the more valuable half. A constant delay
+can be modelled and priced into a quote; a delay that varies by 57 ms cannot, because
+the strategy never knows how stale its own view is.
+
+The clock result is a side effect worth noting: with `chrony` the offset is 65
+microseconds, so exchange timestamps on this host are directly comparable to local ones.
+The NTP-style measurement is still what the engine uses, because it must also be correct
+on a freshly booted instance before time sync has converged.
+
+A naive reading of a single `curl` on the same box suggested 42 ms per request. That
+figure is a fresh TLS handshake each time - about 31 ms of it CPU-bound cryptography on
+a burstable instance, not network. It is the reason the HTTP client holds connections
+open.
 
 ## 6. The first SPSC benchmark was wrong by three orders of magnitude
 
@@ -164,7 +195,7 @@ spsc throughput        256 M msg/s
 
 **Implication.** Latency and throughput are separate questions and need separate
 experiments. A benchmark that conflates them produces numbers that look catastrophic for
-no reason — and the failure is silent, because the code is correct and only the
+no reason - and the failure is silent, because the code is correct and only the
 interpretation is wrong.
 
 ## 7. Where the candidates actually stand
@@ -197,7 +228,7 @@ minute; TACUSDT's 4.4 bps at 51 prints is worth considerably more.
 
 **p90 far above the median means an unstable book.** DYDXUSDT runs 9.18 → 18.35 and
 FHEUSDT 10.71 → 16.07. A spread that doubles is a book that gaps when something happens
-— risk, not opportunity. CVXUSDT at 8.722 → 8.726 is the stable kind.
+- risk, not opportunity. CVXUSDT at 8.722 → 8.726 is the stable kind.
 
 **DATAIPUSDT is suspiciously stable:** median 14.194, p90 14.205. A spread that does not
 move usually means a dominant maker holding a fixed quote. Worth understanding why they

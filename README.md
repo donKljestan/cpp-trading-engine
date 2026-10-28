@@ -1,4 +1,4 @@
-# llt — low-latency trading engine
+# llt - low-latency trading engine
 
 A market data and execution engine for Binance USDⓈ-M perpetual futures, written in
 C++20 with no runtime dependencies beyond OpenSSL.
@@ -78,7 +78,7 @@ or a silently wrong tick comparison. Tick rounding uses floor division, because
 truncating division rounds negative values the wrong way and breaks alignment below zero.
 
 **JSON is scanned in one pass.** Searching for `"key":` per field rescans the buffer
-once per field — nine passes over a `bookTicker` payload. `ObjectScanner` visits each
+once per field - nine passes over a `bookTicker` payload. `ObjectScanner` visits each
 byte once and dispatches on the first character of the key.
 
 **Certificate and hostname verification are not configurable.** This connection will
@@ -136,11 +136,15 @@ The SPSC figure is a ping-pong round trip over two rings with exactly one messag
 flight, halved. Measuring push-to-pop on a single ring with a free-running producer
 reports queue residency instead and gives numbers three orders of magnitude worse.
 
-Network, measured from Belgrade to `fapi.binance.com`:
+Network, measured against `fapi.binance.com` with a kept-alive connection:
 
 ```
-rtt     min 258.1   p50 261.3   p90 307.5   p99 318.0   max 455.7   ms
+from Belgrade            rtt  p50 261.3   p90 307.5   p99 318.0   ms
+from AWS ap-northeast-1  rtt  p50   3.65  p90   4.91  p99   5.92  ms
 ```
+
+The jitter matters more than the latency: p99 minus p50 falls from 57 ms to 2.3 ms.
+Unpredictable delay cannot be compensated for in a quoting strategy; a constant one can.
 
 ## Security
 
