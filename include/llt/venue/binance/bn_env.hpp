@@ -21,11 +21,13 @@ struct Endpoints {
 inline constexpr Endpoints kProduction{"production", "fapi.binance.com",
                                        "fstream.binance.com", "ws-fapi.binance.com", true};
 
-// Verified 2026-10-28: the old testnet.binancefuture.com now redirects here, and both
-// serve the same 743-symbol demo book against production's 936.
+// Verified 2026-10-28 by protocol probe, not by DNS: *.binance.com is a wildcard, so a
+// hostname resolving proves nothing. demo-ws-fapi.binance.com looked plausible and
+// redirects to the website; the demo WebSocket API is still on the old testnet host,
+// which also serves the same 743-symbol book as demo-fapi against production's 936.
 inline constexpr Endpoints kDemo{"demo", "demo-fapi.binance.com",
-                                 "demo-fstream.binance.com", "demo-ws-fapi.binance.com",
-                                 false};
+                                 "demo-fstream.binance.com",
+                                 "testnet.binancefuture.com", false};
 
 // Selected by LLT_BINANCE_ENV=production; demo otherwise, including when unset.
 //
