@@ -38,6 +38,19 @@ if(LLT_SANITIZER)
     target_link_options(llt_flags INTERFACE -fsanitize=${LLT_SANITIZER})
 endif()
 
+# LTO pays off in the hot path but breaks sanitizer symbolisation, so keep them apart.
+# Set globally rather than per target: a hand-written list has to be extended with
+# every new tool, and a target left off links against a bitcode archive it cannot read.
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT LLT_SANITIZER)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT LLT_IPO_OK OUTPUT LLT_IPO_MSG)
+    if(LLT_IPO_OK)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+    else()
+        message(STATUS "LTO unavailable: ${LLT_IPO_MSG}")
+    endif()
+endif()
+
 add_library(llt_core STATIC
     src/core/clock.cpp
     src/core/cpu.cpp
@@ -85,17 +98,6 @@ target_link_libraries(keygen PRIVATE llt_core)
 
 add_executable(auth_check src/tools/auth_check.cpp)
 target_link_libraries(auth_check PRIVATE llt_core)
-
-# LTO pays off in the hot path but breaks sanitizer symbolisation, so keep them apart.
-if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT LLT_SANITIZER)
-    include(CheckIPOSupported)
-    check_ipo_supported(RESULT LLT_IPO_OK OUTPUT LLT_IPO_MSG)
-    if(LLT_IPO_OK)
-        set_property(TARGET llt_core llt_bot md_dump lat_probe sym_scan md_record md_replay
-                     backtest keygen auth_check
-                     PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
-    endif()
-endif()
 
 if(LLT_BUILD_TESTS)
     enable_testing()
