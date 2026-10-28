@@ -77,6 +77,9 @@ target_link_libraries(md_replay PRIVATE llt_core)
 add_executable(backtest src/tools/backtest.cpp)
 target_link_libraries(backtest PRIVATE llt_core)
 
+add_executable(queue_probe src/tools/queue_probe.cpp)
+target_link_libraries(queue_probe PRIVATE llt_core)
+
 add_executable(keygen src/tools/keygen.cpp)
 target_link_libraries(keygen PRIVATE llt_core)
 

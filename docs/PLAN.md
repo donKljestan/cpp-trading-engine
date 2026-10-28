@@ -226,10 +226,15 @@ answer is currently determined by a number nobody has measured.
 
 ## F4.5 - Measuring the queue · next
 
-The decay rate can be estimated from recordings already on disk. When the size resting
-at a price level falls by more than the trades at that level explain, the difference is
-cancellation net of new orders. That is a lower bound, it costs nothing, and it replaces
-an invented parameter with a measured one.
+The decay rate can be estimated from recordings already on disk. `queue_probe` compares
+consecutive depth snapshots: when the size resting at a price falls by more than the
+trades at that price explain, the difference left through cancellation.
+
+The estimate is deliberately a lower bound. Only the net change between snapshots is
+observable, so orders arriving during the interval hide cancellations that really
+happened. Erring low is the safe direction - if even the bound exceeds the rate at
+which the strategy turns profitable, then the fill model's pessimism, and not the
+strategy, was what produced the earlier verdict.
 
 ## F5 - Execution · done
 

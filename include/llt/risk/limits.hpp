@@ -10,10 +10,10 @@
 // A *halt* latches. Only an operator calling reset() clears it. Daily loss and a
 // reject storm are halts because the condition that triggered them says our model of
 // the world is wrong, and a limit that can un-trip itself will un-trip at the worst
-// possible moment — an unrealised bounce makes equity look survivable again and
+// possible moment - an unrealised bounce makes equity look survivable again and
 // trading resumes exactly when it is least likely to be right.
 //
-// Scope: this layer owns *exposure*. It does not re-check tick size or lot size —
+// Scope: this layer owns *exposure*. It does not re-check tick size or lot size -
 // that is the gateway's job (llt/exec/order_gateway.hpp). Splitting them keeps each
 // check in exactly one place.
 
@@ -107,7 +107,7 @@ public:
         }
     }
 
-    // Repeated rejections mean our picture of the venue is wrong — stale rules, an
+    // Repeated rejections mean our picture of the venue is wrong - stale rules, an
     // expired session, a symbol that stopped trading. Hammering on earns a ban.
     void on_reject() noexcept {
         ++consecutive_rejects_;
@@ -137,7 +137,7 @@ public:
     }
 
     // Resting orders are priced off a book we can no longer see, so a stale feed is
-    // not only a reason to stop sending — it is a reason to pull what is already out.
+    // not only a reason to stop sending - it is a reason to pull what is already out.
     [[nodiscard]] bool should_cancel_all(uint64_t now_ns) const noexcept {
         return halted() || data_stale(now_ns);
     }

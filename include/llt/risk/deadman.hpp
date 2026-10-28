@@ -5,7 +5,7 @@
 // Every other check in this engine assumes the engine is running. This one is the
 // only protection that survives the engine dying: we ask the venue to cancel all our
 // orders unless we keep saying we are alive. Binance USDⓈ-M exposes it as
-// POST /fapi/v1/countdownCancelAll with a symbol and a countdownTime in ms — a
+// POST /fapi/v1/countdownCancelAll with a symbol and a countdownTime in ms - a
 // timer the venue holds and we refresh. If the process is killed, the network is
 // severed or the host is terminated, the venue cancels for us.
 //

@@ -4,7 +4,7 @@
 //
 // `touch /run/llt/STOP` over SSH stops trading. It works when the process is wedged
 // in a way that ignores signals, it leaves a timestamped artefact of who stopped
-// what and when, and it survives a restart — the engine will not come back up
+// what and when, and it survives a restart - the engine will not come back up
 // trading while the file is there.
 
 #include <cstdint>
