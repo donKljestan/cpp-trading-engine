@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "llt/core/clock.hpp"
 
@@ -60,25 +61,23 @@ bool HttpClient::connect(const char* host, uint16_t port, int timeout_ms) {
     return tls_.connect(std::move(sock), host, timeout_ms);
 }
 
-bool HttpClient::send_request(const char* path) {
-    char      req[2048];
-    const int len = std::snprintf(req, sizeof(req),
-                                  "GET %s HTTP/1.1\r\n"
-                                  "Host: %s\r\n"
-                                  "Connection: keep-alive\r\n"
-                                  "Accept: application/json\r\n"
-                                  "User-Agent: llt/0.1\r\n"
-                                  "\r\n",
-                                  path, host_.c_str());
-    if (len <= 0 || static_cast<size_t>(len) >= sizeof(req)) {
-        record("request line too long");
-        return false;
-    }
+bool HttpClient::send_request(const char* path, const char* extra_headers) {
+    std::string req;
+    req.reserve(512);
+    req += "GET ";
+    req += path;
+    req += " HTTP/1.1\r\nHost: ";
+    req += host_;
+    req +=
+        "\r\nConnection: keep-alive\r\nAccept: application/json\r\nUser-Agent: llt/0.1\r\n";
+    if (extra_headers != nullptr) req += extra_headers;
+    req += "\r\n";
 
-    size_t sent = 0;
-    while (sent < static_cast<size_t>(len)) {
+    const size_t len = req.size();
+    size_t       sent = 0;
+    while (sent < len) {
         size_t         n  = 0;
-        const IoStatus st = tls_.write(req + sent, static_cast<size_t>(len) - sent, n);
+        const IoStatus st = tls_.write(req.data() + sent, len - sent, n);
         if (st == IoStatus::Ok) {
             sent += n;
             continue;
@@ -218,11 +217,12 @@ bool HttpClient::read_response(int timeout_ms, HttpResponse& out) {
     return true;
 }
 
-bool HttpClient::get(const char* path, int timeout_ms, HttpResponse& out) {
+bool HttpClient::get(const char* path, int timeout_ms, HttpResponse& out,
+                     const char* extra_headers) {
     for (int attempt = 0; attempt < 2; ++attempt) {
         if (!tls_.valid() && !connect(host_.c_str(), port_, timeout_)) return false;
 
-        if (send_request(path) && read_response(timeout_ms, out)) return true;
+        if (send_request(path, extra_headers) && read_response(timeout_ms, out)) return true;
 
         // A kept-alive connection can be closed by the server at any time; that is not
         // an error until a fresh connection fails the same way.

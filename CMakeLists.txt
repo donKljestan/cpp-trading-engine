@@ -42,6 +42,7 @@ add_library(llt_core STATIC
     src/core/clock.cpp
     src/core/cpu.cpp
     src/exec/signer.cpp
+    src/exec/ws_api.cpp
     src/md/record.cpp
     src/net/tcp.cpp
     src/net/tls.cpp
@@ -77,13 +78,16 @@ target_link_libraries(backtest PRIVATE llt_core)
 add_executable(keygen src/tools/keygen.cpp)
 target_link_libraries(keygen PRIVATE llt_core)
 
+add_executable(auth_check src/tools/auth_check.cpp)
+target_link_libraries(auth_check PRIVATE llt_core)
+
 # LTO pays off in the hot path but breaks sanitizer symbolisation, so keep them apart.
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT LLT_SANITIZER)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT LLT_IPO_OK OUTPUT LLT_IPO_MSG)
     if(LLT_IPO_OK)
         set_property(TARGET llt_core llt_bot md_dump lat_probe sym_scan md_record md_replay
-                     backtest keygen
+                     backtest keygen auth_check
                      PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
 endif()

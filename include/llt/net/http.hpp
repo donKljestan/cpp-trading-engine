@@ -31,12 +31,14 @@ public:
     [[nodiscard]] bool valid() const noexcept { return tls_.valid(); }
 
     // Reconnects once and retries if the server dropped a kept-alive connection.
-    [[nodiscard]] bool get(const char* path, int timeout_ms, HttpResponse& out);
+    // `extra_headers`, when given, must already be CRLF-terminated lines.
+    [[nodiscard]] bool get(const char* path, int timeout_ms, HttpResponse& out,
+                           const char* extra_headers = nullptr);
 
     [[nodiscard]] static const char* last_error() noexcept;
 
 private:
-    [[nodiscard]] bool send_request(const char* path);
+    [[nodiscard]] bool send_request(const char* path, const char* extra_headers);
     [[nodiscard]] bool read_response(int timeout_ms, HttpResponse& out);
     [[nodiscard]] bool fill_until(uint64_t deadline_ns);
 
