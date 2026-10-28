@@ -14,7 +14,9 @@
 
 set -uo pipefail
 
-REPO="${LLT_REPO:-$HOME/cpp-trading-engine}"
+# Resolved from this script rather than assumed, so the checkout can live anywhere.
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO="${LLT_REPO:-$(dirname "$SCRIPT_DIR")}"
 DATA="${LLT_DATA_DIR:-$HOME/data}"
 ENV_FILE="${LLT_ENV_FILE:-/etc/llt/record.env}"
 STAMP="${LLT_DAILY_STAMP:-$HOME/.llt-daily-stamp}"
@@ -28,16 +30,16 @@ echo "================================================================"
 echo "llt daily  $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 echo "================================================================"
 
-"$REPO/deploy/healthcheck.sh" "$DATA"
+bash "$REPO/deploy/healthcheck.sh" "$DATA"
 
 # ------------------------------------------------- did every symbol show up
 
 if [[ -f "$STAMP" ]]; then
     echo -e "\n== since $(date -u -r "$STAMP" '+%Y-%m-%d %H:%M UTC') =="
-    mapfile -t recent < <(find "$DATA" -name 'md-*.mdlog*' -newer "$STAMP" | sort)
+    mapfile -t recent < <(find "$DATA" -name 'md-*.mdlog*' -newer "$STAMP" 2>/dev/null | sort)
 else
     echo -e "\n== last ${HOURS}h (no previous run recorded) =="
-    mapfile -t recent < <(find "$DATA" -name 'md-*.mdlog*' -mmin "-$(( HOURS * 60 ))" | sort)
+    mapfile -t recent < <(find "$DATA" -name 'md-*.mdlog*' -mmin "-$(( HOURS * 60 ))" 2>/dev/null | sort)
 fi
 
 if [[ "${#recent[@]}" -eq 0 ]]; then
