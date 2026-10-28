@@ -5,9 +5,10 @@
 // moves against a fill in the second after it happens, the quotes are being picked off
 // and no parameter tuning fixes that.
 //
-//   backtest FILE.mdlog [--symbol TACUSDT] [--qty 50] [--max-pos 200]
-//            [--fee-bps 4] [--buffer-bps 1] [--vol-mult 1.0] [--gamma 1.0]
-//            [--latency-us 2000]
+//   backtest FILE.mdlog [...] [--symbol TACUSDT] [--sweep]
+//            [--qty 50] [--max-pos 200] [--fee-bps 4] [--buffer-bps 1]
+//            [--vol-mult 1.0] [--gamma 1.0] [--horizon-s 5] [--latency-us 2000]
+//            [--env production|demo]
 
 #include <algorithm>
 #include <cstdio>
@@ -19,14 +20,19 @@
 #include "llt/core/clock.hpp"
 #include "llt/md/record.hpp"
 #include "llt/strat/sim.hpp"
+#include "llt/venue/binance/bn_env.hpp"
 #include "llt/venue/binance/bn_feed.hpp"
 #include "llt/venue/binance/bn_rest.hpp"
 
 namespace {
 
 struct Options {
-    std::string symbol     = "";
-    double      qty        = 0.0;  // 0 means derive from min notional
+    std::string symbol;
+    // Recordings are of the real market, so instrument rules must come from there too;
+    // the demo book lists fewer symbols and would simply not have some of them.
+    std::string env        = "production";
+    bool        sweep      = false;
+    double      qty        = 0.0;
     double      max_pos    = 0.0;
     double      fee_bps    = 4.0;
     double      buffer_bps = 1.0;
@@ -34,6 +40,7 @@ struct Options {
     double      gamma      = 1.0;
     double      horizon_s  = 5.0;
     uint64_t    latency_us = 2000;
+
     std::vector<std::string> files;
 };
 
@@ -45,6 +52,10 @@ Options parse_args(int argc, char** argv) {
 
         if (a == "--symbol") {
             o.symbol = next();
+        } else if (a == "--env") {
+            o.env = next();
+        } else if (a == "--sweep") {
+            o.sweep = true;
         } else if (a == "--qty") {
             o.qty = std::strtod(next(), nullptr);
         } else if (a == "--max-pos") {
@@ -68,23 +79,11 @@ Options parse_args(int argc, char** argv) {
     return o;
 }
 
-// Routes only the chosen symbol into the simulator; a recording holds several.
-struct SymbolFilter {
-    llt::Symbol         want;
-    llt::strat::Simulator* sim = nullptr;
-
-    void on_book_ticker(const llt::BookTicker& bt) {
-        if (bt.symbol == want) sim->on_book_ticker(bt);
-    }
-    void on_depth(const llt::DepthSnapshot& d) {
-        if (d.symbol == want) sim->on_depth(d);
-    }
-    void on_trade(const llt::Trade& t) {
-        if (t.symbol == want) sim->on_trade(t);
-    }
+struct Frame {
+    uint64_t    recv_tsc;
+    std::string payload;
 };
 
-// Counts events per symbol so the tool can pick a default and report coverage.
 struct SymbolCensus {
     std::map<std::string, uint64_t> events;
     std::map<std::string, double>   last_mid;
@@ -96,6 +95,21 @@ struct SymbolCensus {
     }
     void on_depth(const llt::DepthSnapshot& d) { ++events[std::string(d.symbol.view())]; }
     void on_trade(const llt::Trade& t) { ++events[std::string(t.symbol.view())]; }
+};
+
+struct SymbolFilter {
+    llt::Symbol            want;
+    llt::strat::Simulator* sim = nullptr;
+
+    void on_book_ticker(const llt::BookTicker& bt) {
+        if (bt.symbol == want) sim->on_book_ticker(bt);
+    }
+    void on_depth(const llt::DepthSnapshot& d) {
+        if (d.symbol == want) sim->on_depth(d);
+    }
+    void on_trade(const llt::Trade& t) {
+        if (t.symbol == want) sim->on_trade(t);
+    }
 };
 
 template <typename Handler>
@@ -117,6 +131,61 @@ bool replay_files(const std::vector<std::string>& files, Handler& handler) {
     return true;
 }
 
+// Keeps the symbol's frames in memory so a sweep replays from RAM instead of re-reading
+// gigabytes once per parameter set.
+bool load_frames(const std::vector<std::string>& files, std::string_view symbol,
+                 std::vector<Frame>& out) {
+    const std::string needle = "\"" + std::string(symbol) + "\"";
+
+    for (const auto& path : files) {
+        llt::md::RecordReader reader;
+        if (!reader.open(path)) {
+            std::fprintf(stderr, "cannot read %s\n", path.c_str());
+            return false;
+        }
+        llt::md::RecordHeader hdr;
+        std::string_view      payload;
+        while (reader.next(hdr, payload)) {
+            if (payload.find(needle) == std::string_view::npos) continue;
+            out.push_back({hdr.recv_tsc, std::string(payload)});
+        }
+    }
+    return true;
+}
+
+struct Result {
+    llt::strat::SimStats stats;
+    double               realised   = 0.0;
+    double               open       = 0.0;
+    double               fees       = 0.0;
+    double               net        = 0.0;
+    double               adverse_1s = 0.0;
+};
+
+Result run(const std::vector<Frame>& frames, const llt::strat::SimConfig& cfg,
+           const llt::Symbol& symbol) {
+    llt::strat::Simulator   sim(cfg);
+    SymbolFilter            filter{symbol, &sim};
+    llt::binance::FeedStats stats;
+
+    for (const auto& f : frames) {
+        static_cast<void>(
+            llt::binance::dispatch_payload(f.payload, f.recv_tsc, stats, filter));
+    }
+
+    Result r;
+    r.stats    = sim.stats();
+    r.realised = sim.inventory().realized_pnl().to_double();
+    r.open     = sim.inventory().unrealized_pnl(sim.mark()).to_double();
+    r.fees     = sim.inventory().fees_paid().to_double();
+    r.net      = r.realised + r.open - r.fees;
+    if (r.stats.adverse_1s_n > 0) {
+        r.adverse_1s =
+            r.stats.adverse_1s_bps / static_cast<double>(r.stats.adverse_1s_n);
+    }
+    return r;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -124,7 +193,7 @@ int main(int argc, char** argv) {
     Options opt = parse_args(argc, argv);
 
     if (opt.files.empty()) {
-        std::fprintf(stderr, "usage: backtest FILE.mdlog [...] [--symbol SYM] [options]\n");
+        std::fprintf(stderr, "usage: backtest FILE.mdlog [...] [--symbol SYM] [--sweep]\n");
         return 1;
     }
 
@@ -154,14 +223,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Instrument rules come from the venue, not from guesswork: an order has to clear
-    // both the notional floor and the lot-size floor.
+    const auto& env = llt::binance::env_by_name(opt.env.c_str());
+
     llt::binance::RestClient     rest;
     std::vector<llt::Instrument> instruments;
     llt::Instrument              inst;
     bool                         have_inst = false;
 
-    if (rest.connect() && rest.fetch_instruments(instruments)) {
+    if (rest.connect(env.rest) && rest.fetch_instruments(instruments)) {
         for (const auto& i : instruments) {
             if (i.symbol.view() == opt.symbol) {
                 inst      = i;
@@ -172,7 +241,9 @@ int main(int argc, char** argv) {
         rest.close();
     }
     if (!have_inst) {
-        std::fprintf(stderr, "could not fetch instrument rules for %s\n", opt.symbol.c_str());
+        std::fprintf(stderr, "no instrument rules for %s on %s (%s)\n", opt.symbol.c_str(),
+                     env.name, env.rest);
+        std::fprintf(stderr, "recordings are of the real market; try --env production\n");
         return 1;
     }
 
@@ -190,28 +261,52 @@ int main(int argc, char** argv) {
     if (opt.max_pos <= 0.0) opt.max_pos = opt.qty * 4.0;
 
     llt::strat::SimConfig cfg;
-    cfg.instrument              = inst;
-    cfg.maker_fee_bps           = opt.fee_bps / 2.0;
-    cfg.latency_ns              = opt.latency_us * 1000;
-    cfg.quoter.order_qty        = round_up(llt::Fixed::from_double(opt.qty), inst.step_size);
-    cfg.quoter.max_position     = llt::Fixed::from_double(opt.max_pos);
-    cfg.quoter.fee_bps          = opt.fee_bps;
-    cfg.quoter.edge_buffer_bps  = opt.buffer_bps;
-    cfg.quoter.vol_multiplier   = opt.vol_mult;
-    cfg.quoter.inventory_gamma  = opt.gamma;
-    cfg.quoter.vol_horizon_s    = opt.horizon_s;
+    cfg.instrument             = inst;
+    cfg.maker_fee_bps          = opt.fee_bps / 2.0;
+    cfg.latency_ns             = opt.latency_us * 1000;
+    cfg.quoter.order_qty       = round_up(llt::Fixed::from_double(opt.qty), inst.step_size);
+    cfg.quoter.max_position    = llt::Fixed::from_double(opt.max_pos);
+    cfg.quoter.fee_bps         = opt.fee_bps;
+    cfg.quoter.edge_buffer_bps = opt.buffer_bps;
+    cfg.quoter.vol_multiplier  = opt.vol_mult;
+    cfg.quoter.inventory_gamma = opt.gamma;
+    cfg.quoter.vol_horizon_s   = opt.horizon_s;
 
-    llt::strat::Simulator sim(cfg);
-    SymbolFilter          filter{llt::Symbol(opt.symbol), &sim};
-    if (!replay_files(opt.files, filter)) return 1;
+    std::vector<Frame> frames;
+    if (!load_frames(opt.files, opt.symbol, frames)) return 1;
 
-    const auto&  st  = sim.stats();
-    const auto&  inv = sim.inventory();
-    const double hours =
-        static_cast<double>(st.total_ns) / 3.6e12;
+    const llt::Symbol symbol(opt.symbol);
 
-    std::printf("\n%s over %.2f h  (%lu events)\n", opt.symbol.c_str(), hours,
-                static_cast<unsigned long>(found->second));
+    if (opt.sweep) {
+        std::printf("\n%s  sweep over %zu frames, quote size %.6g\n", opt.symbol.c_str(),
+                    frames.size(), cfg.quoter.order_qty.to_double());
+        std::printf("%8s %9s %8s %10s %10s %11s\n", "buffer", "vol_mult", "fills",
+                    "net USDT", "fees", "adv_1s_bps");
+        std::printf("%s\n", std::string(62, '-').c_str());
+
+        for (const double buffer : {0.5, 1.0, 2.0, 4.0, 8.0}) {
+            for (const double vm : {0.0, 1.0, 2.0, 4.0}) {
+                llt::strat::SimConfig c = cfg;
+                c.quoter.edge_buffer_bps = buffer;
+                c.quoter.vol_multiplier  = vm;
+
+                const Result r = run(frames, c, symbol);
+                std::printf("%8.1f %9.1f %8lu %10.4f %10.4f %11.3f\n", buffer, vm,
+                            static_cast<unsigned long>(r.stats.fills), r.net, r.fees,
+                            r.adverse_1s);
+            }
+        }
+        std::printf("\nwider quotes mean fewer fills; the question is whether what is\n");
+        std::printf("captured per fill grows faster than the fill count falls.\n");
+        return 0;
+    }
+
+    const Result r     = run(frames, cfg, symbol);
+    const auto&  st    = r.stats;
+    const double hours = static_cast<double>(st.total_ns) / 3.6e12;
+
+    std::printf("\n%s over %.2f h  (%lu events, rules from %s)\n", opt.symbol.c_str(),
+                hours, static_cast<unsigned long>(found->second), env.name);
     std::printf("quote size %.6g  max position %.6g  latency %lu us\n",
                 cfg.quoter.order_qty.to_double(), opt.max_pos,
                 static_cast<unsigned long>(opt.latency_us));
@@ -222,21 +317,19 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long>(st.fills),
                 static_cast<unsigned long>(st.bid_fills),
                 static_cast<unsigned long>(st.ask_fills));
-    std::printf("requotes         %lu\n", static_cast<unsigned long>(st.requotes));
+    std::printf("requotes         %lu  (%.2f/s)\n", static_cast<unsigned long>(st.requotes),
+                hours > 0 ? static_cast<double>(st.requotes) / (hours * 3600.0) : 0.0);
     std::printf("quoted           %.1f%% of the time\n",
                 st.total_ns > 0 ? 100.0 * static_cast<double>(st.quoted_ns) /
                                       static_cast<double>(st.total_ns)
                                 : 0.0);
     std::printf("max |position|   %.6g\n", st.max_abs_position.to_double());
 
-    const double realized   = inv.realized_pnl().to_double();
-    const double unrealized = inv.unrealized_pnl(sim.mark()).to_double();
-    const double fees       = inv.fees_paid().to_double();
-
-    std::printf("\nrealised        %+.6f\n", realized);
-    std::printf("open            %+.6f\n", unrealized);
-    std::printf("fees            %-.6f\n", fees);
-    std::printf("net             %+.6f USDT\n", realized + unrealized - fees);
+    std::printf("\nrealised        %+.6f\n", r.realised);
+    std::printf("open            %+.6f\n", r.open);
+    std::printf("fees            %-.6f\n", r.fees);
+    std::printf("gross           %+.6f   (before fees)\n", r.realised + r.open);
+    std::printf("net             %+.6f USDT\n", r.net);
 
     std::printf("\nadverse selection (mid drift after a fill, + is in our favour)\n");
     if (st.adverse_100ms_n > 0) {
@@ -245,10 +338,10 @@ int main(int argc, char** argv) {
                     static_cast<unsigned long>(st.adverse_100ms_n));
     }
     if (st.adverse_1s_n > 0) {
-        std::printf("  +1s     %+.3f bps over %lu fills\n",
-                    st.adverse_1s_bps / static_cast<double>(st.adverse_1s_n),
+        std::printf("  +1s     %+.3f bps over %lu fills\n", r.adverse_1s,
                     static_cast<unsigned long>(st.adverse_1s_n));
     }
+
     if (st.fills == 0) {
         std::printf("\nno fills. diagnosis:\n");
         std::printf("  trades reaching our price   %lu\n",
@@ -258,10 +351,6 @@ int main(int argc, char** argv) {
         std::printf("  last queue ahead of us      %.6g\n", st.last_queue_ahead);
         std::printf("  quote suppressed by guards  %lu times\n",
                     static_cast<unsigned long>(st.quote_suppressed));
-        if (st.trades_reaching_quote == 0) {
-            std::printf("\n  nothing traded through our price: the spread we require is\n");
-            std::printf("  wider than the market ever came to us.\n");
-        }
     }
 
     return 0;
