@@ -12,10 +12,54 @@
 #include <string>
 #include <string_view>
 
+#include "llt/core/clock.hpp"
 #include "llt/exec/signer.hpp"
 #include "llt/net/ws.hpp"
 
 namespace llt::exec {
+
+// Builds a JSON params object.
+//
+// Values are inserted without escaping, which is safe for the only things that go in
+// one: symbols, enum names and formatted numbers. Nothing here ever carries free text.
+class Params {
+public:
+    Params& s(std::string_view key, std::string_view value) {
+        separate();
+        buf_ += '"';
+        buf_ += key;
+        buf_ += "\":\"";
+        buf_ += value;
+        buf_ += '"';
+        return *this;
+    }
+
+    Params& n(std::string_view key, long long value) {
+        separate();
+        buf_ += '"';
+        buf_ += key;
+        buf_ += "\":";
+        buf_ += std::to_string(value);
+        return *this;
+    }
+
+    [[nodiscard]] std::string finish() const { return "{" + buf_ + "}"; }
+
+    // Authenticated requests still need a timestamp after session.logon: the session
+    // proves who is asking, the timestamp stops an old request being replayed.
+    [[nodiscard]] std::string finish_stamped() const {
+        Params copy = *this;
+        copy.n("timestamp", static_cast<long long>(llt::clk::wall_ns() / 1'000'000));
+        return copy.finish();
+    }
+
+private:
+    void separate() {
+        if (!buf_.empty()) buf_ += ',';
+    }
+
+    std::string buf_;
+};
 
 struct WsApiResponse {
     std::string id;

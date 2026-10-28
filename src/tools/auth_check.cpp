@@ -179,11 +179,14 @@ int main() {
     }
     std::printf("session.logon     ok\n");
 
-    // Proves the session is genuinely authenticated: this call carries no signature.
+    // Proves the session is genuinely authenticated: this call carries no signature,
+    // only the timestamp the venue requires on every authenticated request.
+    const std::string params = llt::exec::Params{}.finish_stamped();
+
     llt::exec::WsApiResponse ws_resp;
-    if (ws.request("v2/account.balance", "{}", 10'000, ws_resp) && ws_resp.ok()) {
+    if (ws.request("v2/account.balance", params, 10'000, ws_resp) && ws_resp.ok()) {
         std::printf("unsigned query    ok  (session is authenticated)\n");
-    } else if (ws.request("account.balance", "{}", 10'000, ws_resp) && ws_resp.ok()) {
+    } else if (ws.request("account.balance", params, 10'000, ws_resp) && ws_resp.ok()) {
         std::printf("unsigned query    ok  (session is authenticated)\n");
     } else {
         std::fprintf(stderr, "post-logon query failed: %d %s\n", ws_resp.error_code,
