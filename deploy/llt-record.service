@@ -1,0 +1,35 @@
+[Unit]
+Description=llt market data recorder
+After=network-online.target chrony.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/low_latency_trading
+
+# Symbols live here rather than in the unit so the capture set can change without
+# editing a file that is under version control.
+EnvironmentFile=/etc/llt/record.env
+
+ExecStart=/home/ubuntu/low_latency_trading/build/release/md_record \
+    --symbols ${LLT_SYMBOLS} \
+    --out /home/ubuntu/data/md \
+    --rotate-mins 60
+
+# The recorder reconnects on its own; a restart here means it died outright.
+Restart=always
+RestartSec=5
+
+# SIGINT is the recorder's clean-shutdown path: it flushes and closes the current file.
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+# A capture must never be the reason the instance runs out of memory.
+MemoryMax=512M
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

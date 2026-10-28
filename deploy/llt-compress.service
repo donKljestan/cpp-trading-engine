@@ -1,0 +1,7 @@
+[Unit]
+Description=Compress completed llt captures
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/low_latency_trading/deploy/compress.sh /home/ubuntu/data
