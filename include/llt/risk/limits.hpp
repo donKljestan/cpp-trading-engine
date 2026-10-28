@@ -121,7 +121,9 @@ public:
 
     [[nodiscard]] bool data_stale(uint64_t now_ns) const noexcept {
         if (!have_md_) return true;
-        if (now_ns <= last_md_ns_) return false;
+        // A clock that moved backwards cannot age anything, and the safe reading of
+        // "I do not know how old this is" is "too old".
+        if (now_ns < last_md_ns_) return true;
         return (now_ns - last_md_ns_) > cfg_.stale_data_ms * uint64_t{1'000'000};
     }
 

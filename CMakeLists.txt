@@ -116,6 +116,7 @@ if(LLT_BUILD_TESTS)
         tests/test_user_stream.cpp
         tests/test_order_gateway.cpp
         tests/test_risk.cpp
+        tests/test_chaos.cpp
     )
     target_include_directories(llt_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(llt_tests PRIVATE llt_core)

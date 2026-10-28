@@ -130,7 +130,11 @@ public:
         if (parse_client_id(client_id, slot, seq) && slot < kMaxOrders &&
             orders_[slot].seq == seq) {
             seen_[slot] = true;
+            return;
         }
+        // The venue holds an order this process has no record of, which is the normal
+        // state after a restart. Quoting on top of it is quoting blind.
+        ++unclaimed_;
     }
 
     // Returns how many orders were dropped as orphaned.
@@ -148,6 +152,10 @@ public:
 
     [[nodiscard]] uint64_t orphaned() const noexcept { return orphaned_; }
 
+    // Reported by the venue, unknown to us. The mirror of orphaned, and the one a
+    // restarted process sees.
+    [[nodiscard]] uint64_t unclaimed() const noexcept { return unclaimed_; }
+
 private:
     std::array<Order, kMaxOrders> orders_{};
     std::array<bool, kMaxOrders>  seen_{};
@@ -157,6 +165,7 @@ private:
     uint64_t unknown_updates_ = 0;
     uint64_t stale_updates_   = 0;
     uint64_t orphaned_        = 0;
+    uint64_t unclaimed_       = 0;
 };
 
 }  // namespace llt::exec

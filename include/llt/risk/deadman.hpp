@@ -30,7 +30,8 @@ public:
 
     [[nodiscard]] bool due(uint64_t now_ns) const noexcept {
         if (!armed_) return true;
-        if (now_ns <= last_sent_ns_) return false;
+        // Refreshing early costs one request; not refreshing risks a flattened book.
+        if (now_ns < last_sent_ns_) return true;
         return (now_ns - last_sent_ns_) >= refresh_ms_ * uint64_t{1'000'000};
     }
 
@@ -45,7 +46,8 @@ public:
     // true: no protection is in place yet.
     [[nodiscard]] bool lapsed(uint64_t now_ns) const noexcept {
         if (!armed_) return true;
-        if (now_ns <= last_sent_ns_) return false;
+        // With a clock that went backwards we cannot show the venue's timer survived.
+        if (now_ns < last_sent_ns_) return true;
         return (now_ns - last_sent_ns_) > countdown_ms_ * uint64_t{1'000'000};
     }
 
