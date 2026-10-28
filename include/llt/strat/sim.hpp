@@ -37,8 +37,13 @@ struct SimConfig {
 
     double maker_fee_bps = 2.0;  // per side
 
-    // Fraction of the queue ahead of us that is cancelled per second. Zero reproduces
-    // the trades-only model; 1.0 means roughly two thirds of it leaves each second.
+    // Units cancelled ahead of us for every unit traded at our price. Measured by
+    // `queue_probe` at 4 to 12 on the candidate symbols, and a lower bound at that,
+    // since only the net change between depth snapshots is observable.
+    double cancel_per_trade = 0.0;
+
+    // Fraction of the queue ahead cancelled per second, independent of trading. Hard
+    // to measure from public data for the same reason, so it defaults to off.
     double queue_decay_per_s = 0.0;
 
     // One way. A decision taken now reaches the matching engine this much later.
@@ -180,6 +185,15 @@ private:
         Fixed& ahead     = (side == Side::Buy) ? bid_ahead_ : ask_ahead_;
         Fixed& remaining = (side == Side::Buy) ? bid_left_ : ask_left_;
         const Fixed px   = (side == Side::Buy) ? live_.bid_px : live_.ask_px;
+
+        // Trading at a level is evidence of churn at it, and most of what leaves a
+        // level is cancelled rather than traded. This removes size ahead of us
+        // without filling us, which is exactly what a cancellation does.
+        if (cfg_.cancel_per_trade > 0.0 && ahead.raw > 0) {
+            const int64_t pulled = static_cast<int64_t>(
+                static_cast<double>(incoming.raw) * cfg_.cancel_per_trade);
+            ahead.raw = (ahead.raw > pulled) ? ahead.raw - pulled : 0;
+        }
 
         ++stats_.trades_reaching_quote;
         stats_.last_queue_ahead = ahead.to_double();

@@ -45,6 +45,7 @@ struct Options {
     int64_t     requote_ticks = 1;
     uint64_t    requote_ms    = 100;
     double      queue_decay   = 0.0;
+    double      cancel_per_trade = 0.0;
 
     std::vector<std::string> files;
 };
@@ -65,6 +66,8 @@ Options parse_args(int argc, char** argv) {
             o.sweep_queue = true;
         } else if (a == "--queue-decay") {
             o.queue_decay = std::strtod(next(), nullptr);
+        } else if (a == "--cancel-per-trade") {
+            o.cancel_per_trade = std::strtod(next(), nullptr);
         } else if (a == "--qty") {
             o.qty = std::strtod(next(), nullptr);
         } else if (a == "--max-pos") {
@@ -297,6 +300,7 @@ int main(int argc, char** argv) {
     cfg.quoter.min_requote_ticks = opt.requote_ticks;
     cfg.quoter.min_requote_ms    = opt.requote_ms;
     cfg.queue_decay_per_s        = opt.queue_decay;
+    cfg.cancel_per_trade         = opt.cancel_per_trade;
 
     std::vector<Frame> frames;
     if (!load_frames(opt.files, opt.symbol, frames)) return 1;
@@ -304,31 +308,30 @@ int main(int argc, char** argv) {
     const llt::Symbol symbol(opt.symbol);
 
     if (opt.sweep_queue) {
-        // The trades-only queue model is known to be pessimistic. This asks how wrong
-        // it would have to be before the strategy pays for itself.
+        // `queue_probe` measures 4 to 12 units cancelled per unit traded, and that is
+        // a lower bound. Zero is the old trades-only model, kept for comparison.
         const double fee_side = opt.fee_bps / 2.0;
-        std::printf("\n%s  queue-decay sensitivity over %zu frames\n", opt.symbol.c_str(),
+        std::printf("\n%s  queue sensitivity over %zu frames\n", opt.symbol.c_str(),
                     frames.size());
         std::printf("capture must clear %.1f bps per fill to pay the fee\n", fee_side);
-        std::printf("decay is the fraction of the queue ahead cancelled per second\n\n");
-        std::printf("%7s %8s %8s %8s %10s %8s %9s\n", "decay", "buffer", "fills",
+        std::printf("cxl/trd is units cancelled ahead of us per unit traded\n\n");
+        std::printf("%8s %8s %8s %8s %10s %8s %9s\n", "cxl/trd", "buffer", "fills",
                     "cap_bps", "net USDT", "adv_1s", "blocked%");
-        std::printf("%s\n", std::string(64, '-').c_str());
+        std::printf("%s\n", std::string(65, '-').c_str());
 
-        for (const double decay : {0.0, 0.5, 2.0, 8.0, 32.0}) {
+        for (const double k : {0.0, 4.0, 8.0, 12.0}) {
             for (const double buffer : {1.0, 2.0, 4.0}) {
                 llt::strat::SimConfig c  = cfg;
-                c.queue_decay_per_s      = decay;
+                c.cancel_per_trade       = k;
                 c.quoter.edge_buffer_bps = buffer;
 
                 const Result r = run(frames, c, symbol, mid);
-                std::printf("%7.1f %8.1f %8lu %8.2f %10.4f %8.2f %9.1f\n", decay, buffer,
+                std::printf("%8.1f %8.1f %8lu %8.2f %10.4f %8.2f %9.1f\n", k, buffer,
                             static_cast<unsigned long>(r.stats.fills), r.capture_bps,
                             r.net, r.adverse_1s, r.blocked_pct);
             }
         }
-        std::printf("\nif capture only clears the fee at an implausible decay rate, the\n");
-        std::printf("pessimism of the fill model is not what is holding the strategy back.\n");
+        std::printf("\nthe measured range is the middle of this table, not its edges.\n");
         return 0;
     }
 
@@ -379,7 +382,8 @@ int main(int argc, char** argv) {
     std::printf("requote after %ld tick(s) and %lu ms\n",
                 static_cast<long>(opt.requote_ticks),
                 static_cast<unsigned long>(opt.requote_ms));
-    std::printf("queue decay %.2f/s\n\n", opt.queue_decay);
+    std::printf("queue decay %.2f/s, cancel per trade %.1f\n\n", opt.queue_decay,
+                opt.cancel_per_trade);
 
     std::printf("fills            %lu  (%lu bid / %lu ask)\n",
                 static_cast<unsigned long>(st.fills),

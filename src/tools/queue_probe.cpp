@@ -41,6 +41,12 @@ struct Bucket {
         const double left = cancelled + traded;
         return left > 0.0 ? 100.0 * traded / left : 0.0;
     }
+    // Units cancelled for every unit traded. This is what the fill simulator takes,
+    // and it survives the masking problem better than the absolute rate does: both
+    // terms are counted over the same intervals.
+    [[nodiscard]] double cancel_per_trade() const {
+        return traded > 0.0 ? cancelled / traded : 0.0;
+    }
 };
 
 struct SymbolState {
@@ -185,21 +191,22 @@ int main(int argc, char** argv) {
     }
 
     std::printf("\nqueue drain by cancellation, lower bound (net of new orders)\n\n");
-    std::printf("%-12s %10s %9s %9s %9s %11s %9s\n", "symbol", "samples", "touch/s",
-                "near/s", "deep/s", "touch med/s", "traded%");
+    std::printf("%-12s %10s %9s %9s %11s %9s %9s\n", "symbol", "samples", "touch/s",
+                "deep/s", "touch med/s", "traded%", "cxl/trd");
     std::printf("%s\n", std::string(76, '-').c_str());
 
     for (auto& [name, s] : probe.symbols) {
         if (s.touch.samples == 0) continue;
-        std::printf("%-12s %10lu %9.2f %9.2f %9.2f %11.2f %9.1f\n", name.c_str(),
+        std::printf("%-12s %10lu %9.2f %9.2f %11.2f %9.1f %9.1f\n", name.c_str(),
                     static_cast<unsigned long>(s.touch.samples), s.touch.rate_per_s(),
-                    s.near.rate_per_s(), s.deep.rate_per_s(), median(s.touch_rates),
-                    s.touch.trade_share());
+                    s.deep.rate_per_s(), median(s.touch_rates), s.touch.trade_share(),
+                    s.touch.cancel_per_trade());
     }
 
-    std::printf("\ntouch/s is the figure the fill model needs: the fraction of the size\n");
-    std::printf("resting at the best price that leaves each second without trading.\n");
-    std::printf("traded%% is how much of all departing size trades account for; the rest\n");
-    std::printf("is cancellation, which the simulator assumed did not happen.\n");
+    std::printf("\nA median of zero means most intervals show no net decrease at all:\n");
+    std::printf("orders arriving hide orders leaving, so touch/s is a floor far below\n");
+    std::printf("the truth and should not be read as a rate.\n\n");
+    std::printf("cxl/trd is the usable figure. It is what the simulator consumes, and\n");
+    std::printf("the trades-only fill model assumed it was zero.\n");
     return 0;
 }
