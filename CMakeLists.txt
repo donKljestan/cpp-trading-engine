@@ -110,6 +110,7 @@ if(LLT_BUILD_TESTS)
         tests/test_record.cpp
         tests/test_signals.cpp
         tests/test_quoter.cpp
+        tests/test_sim.cpp
         tests/test_signer.cpp
         tests/test_order_manager.cpp
         tests/test_user_stream.cpp

@@ -175,6 +175,9 @@ int raw_mode(const std::string& streams, long want, const char* host) {
 
 int main(int argc, char** argv) {
     llt::clk::clock_init();
+    // Output to a pipe is block buffered, so a diagnostic killed by `timeout` loses
+    // everything it printed. Line buffering keeps what it managed to say.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
 
     std::string streams;
     std::string env_name = "production";
