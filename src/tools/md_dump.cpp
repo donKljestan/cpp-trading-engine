@@ -1,12 +1,17 @@
 // Connects to the Binance USDⓈ-M futures market data feed and reports what arrives.
 //
-//   md_dump [streams] [messages]
+//   md_dump [streams] [messages] [--symbols SYM,SYM] [--env production|demo]
 //   md_dump btcusdt@bookTicker 100
-//   md_dump "btcusdt@bookTicker/btcusdt@depth20@100ms/btcusdt@trade" 300
+//   md_dump --symbols FXSUSDT,TACUSDT
+//
+// Defaults to production, as the recorder does: reading the real book is the point,
+// and a diagnostic pointed at a different venue than the one being diagnosed is worse
+// than no diagnostic.
 //
 // LLT_RAW=1 dumps undecoded frames; LLT_SUB sends a live subscription request first.
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -14,6 +19,7 @@
 
 #include "llt/core/clock.hpp"
 #include "llt/net/ws.hpp"
+#include "llt/venue/binance/bn_env.hpp"
 #include "llt/venue/binance/bn_feed.hpp"
 #include "llt/venue/binance/bn_rest.hpp"
 
@@ -92,10 +98,9 @@ void report_spreads(std::vector<double>& v) {
 // The only way to tell "we failed to parse it" apart from "it never arrived".
 // An argument starting with '/' is used as the raw request path, so any endpoint
 // shape can be probed, not just /stream?streams=.
-int raw_mode(const std::string& streams, long want) {
+int raw_mode(const std::string& streams, long want, const char* host) {
     const std::string path =
         streams.starts_with('/') ? streams : ("/stream?streams=" + streams);
-    const char* const host = llt::binance::active_env().md_ws;
     std::printf("raw mode: wss://%s%s\n\n", host, path.c_str());
 
     llt::net::WsClient ws;
@@ -171,13 +176,49 @@ int raw_mode(const std::string& streams, long want) {
 int main(int argc, char** argv) {
     llt::clk::clock_init();
 
-    const std::string streams = (argc > 1) ? argv[1] : "btcusdt@bookTicker";
-    const long        want    = (argc > 2) ? std::strtol(argv[2], nullptr, 10) : 100;
+    std::string streams;
+    std::string env_name = "production";
+    long        want     = 100;
+    int         positional = 0;
 
-    if (std::getenv("LLT_RAW") != nullptr) return raw_mode(streams, want);
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        const auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : ""; };
+
+        if (a == "--env") {
+            env_name = next();
+        } else if (a == "--symbols") {
+            for (const auto& sym : split(next(), ',')) {
+                if (sym.empty()) continue;
+                std::string lower = sym;
+                std::transform(lower.begin(), lower.end(), lower.begin(), [](char c) {
+                    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                });
+                if (!streams.empty()) streams += '/';
+                streams += lower + "@bookTicker/" + lower + "@depth20@100ms/" + lower +
+                           "@trade";
+            }
+        } else if (a.starts_with("--")) {
+            // Silently treating an unknown flag as a stream name produced a connection
+            // to a stream literally called "--symbols", and zero frames to show for it.
+            std::fprintf(stderr, "unknown option %s\n", a.c_str());
+            return 1;
+        } else if (positional++ == 0) {
+            streams = a;
+        } else {
+            want = std::strtol(a.c_str(), nullptr, 10);
+        }
+    }
+
+    if (streams.empty()) streams = "btcusdt@bookTicker";
+
+    const auto& env = llt::binance::env_by_name(env_name.c_str());
+    std::printf("env %s (%s)\n", env.name, env.md_ws);
+
+    if (std::getenv("LLT_RAW") != nullptr) return raw_mode(streams, want, env.md_ws);
 
     llt::binance::RestClient rest;
-    if (rest.connect()) {
+    if (rest.connect(env.rest)) {
         std::vector<llt::Instrument> instruments;
         if (rest.fetch_instruments(instruments)) {
             size_t tradable = 0;
@@ -204,6 +245,7 @@ int main(int argc, char** argv) {
 
     llt::binance::MdFeed::Config cfg;
     cfg.streams = split(streams, '/');
+    cfg.host    = env.md_ws;
 
     llt::binance::MdFeed feed;
     if (!feed.connect(cfg)) {
