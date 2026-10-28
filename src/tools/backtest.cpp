@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,7 @@ struct Options {
     std::string env        = "production";
     bool        sweep      = false;
     bool        sweep_queue = false;
+    bool        all        = false;
     double      qty        = 0.0;
     double      max_pos    = 0.0;
     double      fee_bps    = 4.0;
@@ -64,6 +66,8 @@ Options parse_args(int argc, char** argv) {
             o.sweep = true;
         } else if (a == "--sweep-queue") {
             o.sweep_queue = true;
+        } else if (a == "--all") {
+            o.all = true;
         } else if (a == "--queue-decay") {
             o.queue_decay = std::strtod(next(), nullptr);
         } else if (a == "--cancel-per-trade") {
@@ -182,17 +186,7 @@ struct Result {
     double blocked_pct = 0.0;
 };
 
-Result run(const std::vector<Frame>& frames, const llt::strat::SimConfig& cfg,
-           const llt::Symbol& symbol, double mid) {
-    llt::strat::Simulator   sim(cfg);
-    SymbolFilter            filter{symbol, &sim};
-    llt::binance::FeedStats stats;
-
-    for (const auto& f : frames) {
-        static_cast<void>(
-            llt::binance::dispatch_payload(f.payload, f.recv_tsc, stats, filter));
-    }
-
+Result harvest(const llt::strat::Simulator& sim, double mid) {
     Result r;
     r.stats    = sim.stats();
     r.realised = sim.inventory().realized_pnl().to_double();
@@ -212,6 +206,51 @@ Result run(const std::vector<Frame>& frames, const llt::strat::SimConfig& cfg,
     return r;
 }
 
+Result run(const std::vector<Frame>& frames, const llt::strat::SimConfig& cfg,
+           const llt::Symbol& symbol, double mid) {
+    llt::strat::Simulator   sim(cfg);
+    SymbolFilter            filter{symbol, &sim};
+    llt::binance::FeedStats stats;
+
+    for (const auto& f : frames) {
+        static_cast<void>(
+            llt::binance::dispatch_payload(f.payload, f.recv_tsc, stats, filter));
+    }
+    return harvest(sim, mid);
+}
+
+// Ranking many symbols by re-reading the recording once per symbol does not scale to
+// a fortnight of capture, so every symbol is simulated in a single pass instead.
+struct Candidate {
+    llt::Symbol           symbol;
+    llt::strat::Simulator sim;
+    double                mid;
+
+    Candidate(const llt::Symbol& s, const llt::strat::SimConfig& cfg, double m)
+        : symbol(s), sim(cfg), mid(m) {}
+};
+
+struct MultiSim {
+    std::vector<std::unique_ptr<Candidate>> all;
+
+    Candidate* find(const llt::Symbol& s) noexcept {
+        for (auto& c : all) {
+            if (c->symbol == s) return c.get();
+        }
+        return nullptr;
+    }
+
+    void on_book_ticker(const llt::BookTicker& bt) {
+        if (auto* c = find(bt.symbol)) c->sim.on_book_ticker(bt);
+    }
+    void on_depth(const llt::DepthSnapshot& d) {
+        if (auto* c = find(d.symbol)) c->sim.on_depth(d);
+    }
+    void on_trade(const llt::Trade& t) {
+        if (auto* c = find(t.symbol)) c->sim.on_trade(t);
+    }
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -228,6 +267,91 @@ int main(int argc, char** argv) {
     if (census.events.empty()) {
         std::fprintf(stderr, "no decodable events in the given files\n");
         return 1;
+    }
+
+    if (opt.all) {
+        const auto& env = llt::binance::env_by_name(opt.env.c_str());
+
+        llt::binance::RestClient     rest;
+        std::vector<llt::Instrument> instruments;
+        if (!rest.connect(env.rest) || !rest.fetch_instruments(instruments)) {
+            std::fprintf(stderr, "cannot fetch instrument rules from %s\n", env.rest);
+            return 1;
+        }
+        rest.close();
+
+        MultiSim multi;
+        for (const auto& [name, events] : census.events) {
+            const double mid = census.last_mid.count(name) ? census.last_mid[name] : 0.0;
+            if (mid <= 0.0) continue;
+
+            const auto found_inst =
+                std::find_if(instruments.begin(), instruments.end(),
+                             [&](const llt::Instrument& i) { return i.symbol.view() == name; });
+            if (found_inst == instruments.end()) continue;
+
+            const double min_notional = std::max(found_inst->min_notional.to_double(),
+                                                 found_inst->min_qty.to_double() * mid);
+            const double qty = (opt.qty > 0.0) ? opt.qty : min_notional / mid;
+
+            llt::strat::SimConfig c;
+            c.instrument             = *found_inst;
+            c.maker_fee_bps          = opt.fee_bps / 2.0;
+            c.latency_ns             = opt.latency_us * 1000;
+            c.cancel_per_trade       = opt.cancel_per_trade;
+            c.queue_decay_per_s      = opt.queue_decay;
+            c.quoter.order_qty       = round_up(llt::Fixed::from_double(qty),
+                                                found_inst->step_size);
+            c.quoter.max_position    = llt::Fixed::from_double(qty * 4.0);
+            c.quoter.fee_bps         = opt.fee_bps;
+            c.quoter.edge_buffer_bps = opt.buffer_bps;
+            c.quoter.vol_multiplier  = opt.vol_mult;
+            c.quoter.inventory_gamma = opt.gamma;
+            c.quoter.vol_horizon_s   = opt.horizon_s;
+            c.quoter.min_requote_ticks = opt.requote_ticks;
+            c.quoter.min_requote_ms    = opt.requote_ms;
+
+            multi.all.push_back(
+                std::make_unique<Candidate>(llt::Symbol(name), c, mid));
+        }
+
+        if (multi.all.empty()) {
+            std::fprintf(stderr, "no symbol in the recording has usable rules on %s\n",
+                         env.name);
+            return 1;
+        }
+        if (!replay_files(opt.files, multi)) return 1;
+
+        struct Row {
+            std::string name;
+            Result      r;
+        };
+        std::vector<Row> rows;
+        rows.reserve(multi.all.size());
+        for (const auto& c : multi.all) {
+            rows.push_back({std::string(c->symbol.view()), harvest(c->sim, c->mid)});
+        }
+        // Ranked by capture, not by PnL: PnL at this size is cents and scales with the
+        // order, while capture is the per-trade edge that decides whether scaling helps.
+        std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+            return a.r.capture_bps > b.r.capture_bps;
+        });
+
+        std::printf("\n%zu symbols, buffer %.1f, cancel per trade %.1f, fee %.1f bps\n",
+                    rows.size(), opt.buffer_bps, opt.cancel_per_trade, opt.fee_bps);
+        std::printf("capture must clear %.1f bps per fill\n\n", opt.fee_bps / 2.0);
+        std::printf("%-13s %8s %9s %11s %9s %9s\n", "symbol", "fills", "cap_bps",
+                    "net USDT", "adv_1s", "blocked%");
+        std::printf("%s\n", std::string(64, '-').c_str());
+        for (const auto& row : rows) {
+            if (row.r.stats.fills == 0) continue;
+            std::printf("%-13s %8lu %9.2f %11.4f %9.2f %9.1f\n", row.name.c_str(),
+                        static_cast<unsigned long>(row.r.stats.fills), row.r.capture_bps,
+                        row.r.net, row.r.adverse_1s, row.r.blocked_pct);
+        }
+        std::printf("\na symbol is only interesting if capture clears the fee AND the\n");
+        std::printf("fill count is large enough for the number to mean anything.\n");
+        return 0;
     }
 
     if (opt.symbol.empty()) {
