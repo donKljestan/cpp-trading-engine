@@ -237,3 +237,79 @@ can afford to before standing opposite them.
 And the caveat that applies to all of it: these are small-cap instruments. A wide spread
 is payment for inventory risk, not free money. One 20% move erases hundreds of round
 trips.
+
+## 8. The strategy earns a positive gross edge and loses it to the fee
+
+Five candidates replayed through the quoter and fill simulator over 2.37 hours of Tokyo
+capture, at 4 bps round-trip fees.
+
+| symbol | fills | capture bps/fill | net USDT | adverse 1s bps | blocked by queue |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CVXUSDT | 107 | +1.45 | -0.028 | -1.64 | 95.0% |
+| DATAIPUSDT | 79 | +1.27 | -0.029 | -0.18 | 94.4% |
+| TACUSDT | 99 | +0.93 | -0.052 | +0.21 | 94.9% |
+| HANAUSDT | 146 | -0.34 | -0.158 | -2.92 | 93.6% |
+| CFGUSDT | 50 | -0.60 | -0.062 | -0.48 | 97.4% |
+
+Capture per fill is the figure to read, not the PnL: cents depend on order size, basis
+points do not. Three of five produce a positive gross edge, none clears the 2.0 bps
+maker fee. The loss is not to the market, it is to the exchange.
+
+The right-hand column is the dominant fact. At minimum order size we rest 12 to 145
+times our own size behind the front of the queue, so 93-97% of the trades that reach
+our price never touch us. The ones that do are large enough to clear everything ahead -
+which is to say, informed.
+
+## 9. Quoting more patiently made it worse
+
+Requoting roughly once a second against 85 fills means surrendering queue position some
+129 times per fill, so a reluctance threshold should have helped. CVXUSDT, with quote
+width and volatility held fixed:
+
+| min requote ticks | requotes | capture bps | adverse 1s | blocked |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 12 244 | -0.59 | -1.57 | 93.2% |
+| 8 | 5 502 | -1.92 | -3.08 | 93.9% |
+| 64 | 5 585 | -2.43 | -2.62 | 93.7% |
+
+Halving the requote count made capture worse and roughly doubled adverse selection,
+while queue blocking did not move at all. A quote that stays put does not hold its place
+so much as wait to be run over. The threshold also saturates: past 8 ticks the requote
+count stops falling, because `should_replace` always fires when a side toggles on or
+off, and by then the guards are doing most of the toggling.
+
+A 96-cell sweep over width, volatility multiplier and requote reluctance returned three
+profitable cells - with 14, 18 and 32 fills. Every cell with more than a hundred fills
+lost. With 96 tries on one afternoon of data, selecting the best cell would have been
+selecting noise.
+
+## 10. The conclusion was an artefact of the fill model
+
+`sim.hpp` drained the queue ahead of us only through trades. Real queues also drain
+through cancellations, which this feed cannot observe. The bias was documented from the
+start, and its direction was known; what was unknown was its size. So the cancellation
+rate became a parameter and was swept rather than assumed.
+
+TACUSDT, quote width held at 2 bps:
+
+| decay /s | fills | capture bps | net USDT | adverse 1s | blocked |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.0 | 76 | +1.16 | -0.032 | +0.66 | 95.5% |
+| 0.5 | 294 | +4.40 | **+0.301** | +3.78 | 82.9% |
+| 2.0 | 308 | +5.20 | **+0.446** | +4.22 | 81.7% |
+| 8.0 | 329 | +5.21 | **+0.487** | +4.17 | 80.8% |
+| 32.0 | 339 | +4.98 | **+0.469** | +4.19 | 80.1% |
+
+The answer inverts at a decay of 0.5 per second - about 39% of the queue ahead leaving
+each second, which for crypto perpetuals is a conservative rate rather than an extreme
+one. DATAIPUSDT behaves the same way; CVXUSDT only at wider quotes.
+
+Two details argue that this is a real effect and not a fitted one. The result is flat
+from 0.5 through 32, so it does not balance on a particular value. And adverse selection
+flips from neutral to clearly favourable, which is the predicted signature: the extra
+fills arrive from benign flow, while the fills the pessimistic model allowed were the
+informed ones that cleared the whole queue.
+
+The honest conclusion is neither that this works nor that it does not. It is that the
+answer is decided by a number nobody has measured yet, and that the earlier verdict -
+reached with that number silently set to zero - was not evidence.

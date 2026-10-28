@@ -13,10 +13,16 @@ strategy is chosen is wasted if the strategy changes.
 | VIP0 fees: 0.02% maker per side | Any symbol quoting under 4 bps is a guaranteed loss |
 | No market maker agreement | Competitors operate at zero or negative maker fees |
 
-The capital figure is the one that reframes everything. At $20, an excellent 50% annual
-return is $10. The project's expected value is in the engineering and the portfolio, not
-the PnL - so the system is built as though it were real, and trading profit is treated
-as the signal that it works rather than the goal.
+The capital figure is the one that reframes everything, but not in the way it first
+appears. Profit per round trip is measured in basis points and does not depend on size;
+what $20 limits is how many symbols can be quoted at once, and therefore how many round
+trips per day. The binding constraint is edge, not capital - a positive edge can be
+scaled later, a negative one cannot be scaled out of. So the order of work is: prove an
+edge exists, then fund it.
+
+For reference, one symbol at a +1 bps edge and the observed fill rate earns about
+0.16 USDT a day, against roughly 0.81 USDT a day for the server. Roughly twenty symbols
+are needed before the system pays for its own hosting.
 
 ## Phases
 
@@ -27,10 +33,11 @@ as the signal that it works rather than the goal.
 | **F2** | `lat_probe`, `sym_scan`, `md_record`, `md_replay` | Does any symbol beat the fee hurdle? | done - conditional pass |
 | **F3** | Deploy to AWS Tokyo | What is the real round-trip time? | done - 3.65 ms p50 |
 | **F3.5** | Continuous capture from Tokyo | Which strategy, decided from data? | running |
-| **F4** | Signals, quoter, backtest over replay | Positive expectancy in replay? | built, awaiting data |
-| **F5** | Ed25519 WebSocket API, order manager | - | in progress |
+| **F4** | Signals, quoter, backtest over replay | Positive expectancy in replay? | built - the answer depends on the fill model |
+| **F5** | Ed25519 WebSocket API, order manager, gateway | - | done |
 | **F6** | Risk engine, dead-man switch, chaos tests | - | limits built, chaos tests pending |
-| **F7** | Live smoke test, $20, one symbol | Does live agree with replay? | pending |
+| **F4.5** | Measure real queue drain from the recordings | Is the fill model's pessimism what decides the answer? | next |
+| **F7** | Live smoke test, $20, one symbol | Does the real fill rate match the model? | pending |
 | **F8** | Scale | Only if F4 and F7 agree | pending |
 
 ---
@@ -166,37 +173,86 @@ Two weeks of recording from Tokyo across Asian, European and US sessions. This r
 Candidates: the symbols surviving F2, plus BTCUSDT as a control whose economics are
 known to be negative.
 
-## F4 - Strategy · built, awaiting data
+## F4 - Strategy · built, and the answer depends on the fill model
 
 Microprice, order book imbalance, trade-flow imbalance, realised volatility. Reservation
 price skewed by inventory, half-spread bounded below by the fee break-even. Requote
-policy with a tick threshold and a minimum interval, since requoting on every tick burns
-rate limit and destroys queue position. Adverse-selection guards that pull quotes on
-extreme imbalance or one-directional flow.
+policy with a tick threshold and a minimum interval. Adverse-selection guards that pull
+quotes on extreme imbalance or one-directional flow.
 
 Signals are driven by matching-engine time rather than local arrival time, so a replay
 produces identical numbers on any host at any speed. Flow signals stay neutral until
 enough trades have accumulated: an average seeded with its first observation reports a
 single print as a total imbalance, which would have the quoter react to one trade.
 
-The fill simulator models queue position explicitly and states its biases in
-`sim.hpp`. The first run, over a 43-second sample, produced no fills and explained why:
-the required spread put the quote at the touch behind 1650 units of resting size, with
-an order of 45. Queue position, not spread, was the binding constraint. Whether that
-holds over real data is the question F3.5 exists to answer.
+### What the first real backtests said
 
-## F5 - Execution · in progress
+Five symbols over 2.37 hours of Tokyo capture, at default parameters, all lost, and all
+lost the same way: gross edge was positive but smaller than the fee. The reported figure
+that matters is capture per fill in basis points, because PnL in cents depends on order
+size and basis points do not.
+
+A 96-cell sweep over quote width, volatility multiplier and requote reluctance produced
+three profitable cells, with 14, 18 and 32 fills. Every cell with more than a hundred
+fills lost money. Picking the best cell out of 96 tries on one afternoon of data would
+have been fitting noise, so the sweep was read as a trend instead: capture does rise
+with quote width, exactly as theory predicts, but tops out near 1.4 bps against a 2.0
+bps fee while the fill count collapses fivefold.
+
+### A hypothesis that was wrong
+
+Requoting roughly once a second against 85 fills meant surrendering queue position
+about 129 times per fill, so quoting more patiently should have helped. It did the
+opposite: halving the requote count made capture worse and roughly doubled adverse
+selection. A quote that does not move does not hold its place in the queue so much as
+wait to be run over. Being slow is not patience, it is being a target.
+
+### The assumption that decided everything
+
+`sim.hpp` drained the queue ahead of us only through trades. Real queues also drain
+through cancellations, which this feed cannot see, so the model was known to be
+pessimistic - the question was by how much. Rather than guess, the cancellation rate
+became a parameter (`queue_decay_per_s`) and was swept.
+
+The conclusion inverted at a decay of 0.5 per second, meaning about 39% of the queue
+ahead leaving each second. That is not an implausible rate; for crypto perpetuals it is
+a conservative one. TACUSDT went from -0.045 to +0.302 USDT over 341 fills, and adverse
+selection flipped from neutral to +3.6 bps in our favour - the extra fills come from
+benign flow, not informed flow. The result then stayed flat all the way to a decay of
+32, which is the signature of a real effect rather than a tuned parameter.
+
+So the honest state is not "this works" and not "this does not work". It is that the
+answer is currently determined by a number nobody has measured.
+
+## F4.5 - Measuring the queue · next
+
+The decay rate can be estimated from recordings already on disk. When the size resting
+at a price level falls by more than the trades at that level explain, the difference is
+cancellation net of new orders. That is a lower bound, it costs nothing, and it replaces
+an invented parameter with a measured one.
+
+## F5 - Execution · done
 
 Done: Ed25519 signing validated against RFC 8032 test vectors, a key generator that
 never prints a private key, and a WebSocket API client with `session.logon` so no
 request carries a signature. `auth_check` proves a credential end to end over both REST
-and the socket before anything is built on it.
+and the socket before anything is built on it. Order manager with a fixed slot pool and
+an explicit state machine, reconciled against REST. User data stream for
+`ORDER_TRADE_UPDATE` and `ACCOUNT_UPDATE`. Token-bucket rate limiting applied before
+sending rather than after rejection.
 
-Remaining: `order.place` with `timeInForce=GTX` (post-only: rejected rather than
-crossing and paying taker fees), `order.modify`, batch operations. User data stream for
-`ORDER_TRADE_UPDATE` and `ACCOUNT_UPDATE`. Order manager with a fixed slot pool and an
-explicit state machine, reconciled against REST. Token-bucket rate limiting applied
-before sending rather than after rejection.
+The gateway is the last code between an intention and real money, so it defaults to
+`SendMode::DryRun`: it builds the request, counts it, and sends nothing. Orders are
+validated against tick size, lot size and minimum notional locally first - checks the
+venue would perform anyway, but which cost a comparison here and a round trip, a rate
+limit token and eventually a connection there. Orders are `GTX`, so the venue rejects
+rather than letting a quote cross and pay taker fees; for a market maker a rejection is
+the correct outcome, not an error.
+
+A test caught the mistake worth recording: the session check sat *after* the slot
+reservation, so an order that could not be sent still consumed a slot. The engine would
+have believed it had orders resting that never existed. The fix was ordering, not
+cleanup - nothing is acquired before it is known to be usable.
 
 ## F6 - Risk · limits built, chaos tests pending
 
@@ -226,13 +282,18 @@ websocket disconnect, system clock jump.
 
 ## F7 - Live smoke test · pending
 
-Testnet for 48 hours, then $20 live on a single symbol at minimum size.
+Testnet for 48 hours, then $20 live on a single symbol at minimum size. Gated on the
+chaos tests: nothing goes live while the risk layer has only been tested against its
+own assumptions.
 
-At that size no strategy earns anything meaningful - a round trip on a $5 order at
-10 bps is half a cent. That is the correct use of the money: it proves the order
-lifecycle, fee accounting, reconciliation and dead-man switch against the real matching
-engine, which testnet cannot, because testnet has different liquidity and forgiving
-fills. Profitability is judged separately, from replay over recorded data.
+The money is not there to earn. At $5 of notional a round trip at 10 bps is half a
+cent. It buys two things nothing else can. First, proof that the order lifecycle, fee
+accounting, reconciliation and dead-man switch work against the real matching engine -
+which testnet cannot show, because its liquidity and fills are not real. Second, and
+now the more valuable of the two, a measurement of how long a minimum-size order
+actually rests before it fills. That is the number the whole backtest currently turns
+on, and no amount of recorded market data contains it: it only exists for orders that
+were really there.
 
 ## F8 - Scale · pending
 
