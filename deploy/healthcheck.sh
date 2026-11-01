@@ -16,10 +16,16 @@ printf '  state     %s since %s\n' "${state:-unknown}" "${since:-?}"
 printf '  restarts  %s\n' "$restarts"
 
 printf '\n== today ==\n'
-connects="$(journalctl -u "$UNIT" --since today --no-pager 2>/dev/null | grep -c 'connected' || true)"
-drops="$(journalctl -u "$UNIT" --since today --no-pager 2>/dev/null | grep -ci 'dropped\|failed' || true)"
-printf '  connections  %s\n' "$connects"
-printf '  drops/errors %s\n' "$drops"
+log="$(journalctl -u "$UNIT" --since today --no-pager 2>/dev/null || true)"
+connects="$(grep -c 'connected' <<< "$log" || true)"
+# The venue cycles long-lived connections, so a clean close is routine and only the
+# seconds it cost are worth knowing. An error is a different thing and is counted apart.
+closes="$(grep -c 'closed by venue' <<< "$log" || true)"
+errors="$(grep -ciE 'stream dropped.*error|connect failed|write failed' <<< "$log" || true)"
+gap="$(grep -oP 'gap \K[0-9.]+' <<< "$log" | awk '{s+=$1} END {printf "%.1f", s+0}')"
+printf '  connections   %s\n' "$connects"
+printf '  venue closes  %s (%s s not captured)\n' "$closes" "$gap"
+printf '  errors        %s\n' "$errors"
 
 printf '\n== capture ==\n'
 if [[ -d "$DATA_DIR" ]]; then
@@ -51,6 +57,15 @@ fi
 # A handful of reconnects a day is the venue cycling long-lived connections.
 if [[ "$connects" =~ ^[0-9]+$ ]] && (( connects > 20 )); then
     printf '  %s reconnects today - investigate\n' "$connects"
+    problem=1
+fi
+if [[ "$errors" =~ ^[0-9]+$ ]] && (( errors > 0 )); then
+    printf '  %s error(s) today, not routine venue closes\n' "$errors"
+    problem=1
+fi
+# Gaps are the only loss that cannot be made good later.
+if [[ -n "${gap:-}" ]] && awk -v g="$gap" 'BEGIN {exit !(g > 60)}'; then
+    printf '  %s s of capture missing today\n' "$gap"
     problem=1
 fi
 (( problem == 0 )) && printf '  healthy\n'

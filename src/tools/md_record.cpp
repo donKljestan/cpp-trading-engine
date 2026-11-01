@@ -135,6 +135,12 @@ int main(int argc, char** argv) {
     uint64_t reconnects     = 0;
     int      backoff_s      = 1;
 
+    // A gap in the capture cannot be recovered afterwards, so its length is the one
+    // thing the log has to state plainly.
+    uint64_t connected_ns = 0;
+    uint64_t dropped_ns   = 0;
+    uint64_t lost_ns      = 0;
+
     while (g_stop == 0 && llt::clk::mono_ns() < run_deadline) {
         if (!ws.valid()) {
             if (reconnects != 0) {
@@ -156,7 +162,19 @@ int main(int argc, char** argv) {
 
             backoff_s = 1;
             ++reconnects;
-            std::printf("connected (attempt %lu)\n", static_cast<unsigned long>(reconnects));
+            connected_ns = llt::clk::mono_ns();
+            if (dropped_ns != 0) {
+                const uint64_t gap = connected_ns - dropped_ns;
+                lost_ns += gap;
+                std::printf("connected (attempt %lu), gap %.1f s, %.1f s lost today\n",
+                            static_cast<unsigned long>(reconnects),
+                            static_cast<double>(gap) / 1e9,
+                            static_cast<double>(lost_ns) / 1e9);
+                dropped_ns = 0;
+            } else {
+                std::printf("connected (attempt %lu)\n",
+                            static_cast<unsigned long>(reconnects));
+            }
         }
 
         if (!writer.is_open() || llt::clk::mono_ns() - file_opened_ns > rotate_ns) {
@@ -184,7 +202,18 @@ int main(int argc, char** argv) {
             }
         } else if (ev == llt::net::WsClient::Event::Close ||
                    ev == llt::net::WsClient::Event::Error) {
-            std::fprintf(stderr, "stream dropped: %s\n", llt::net::WsClient::last_error());
+            // An empty reason means the venue closed the socket cleanly, which it does
+            // to cycle long-lived connections. That is routine; an error is not.
+            const char* why = llt::net::WsClient::last_error();
+            const bool  clean = (ev == llt::net::WsClient::Event::Close);
+            dropped_ns = llt::clk::mono_ns();
+
+            std::fprintf(stderr, "stream dropped after %.0f s: %s%s\n",
+                         connected_ns != 0
+                             ? static_cast<double>(dropped_ns - connected_ns) / 1e9
+                             : 0.0,
+                         clean ? "closed by venue" : "error",
+                         (why != nullptr && *why != '\0') ? why : "");
             ws.close();
         }
     }
@@ -194,9 +223,10 @@ int main(int argc, char** argv) {
     writer.close();
     ws.close();
 
-    std::printf("\nstopped. %lu records, %.1f MB, %lu connection(s)\n",
+    std::printf("\nstopped. %lu records, %.1f MB, %lu connection(s), %.1f s not captured\n",
                 static_cast<unsigned long>(total_records),
                 static_cast<double>(total_bytes) / 1e6,
-                static_cast<unsigned long>(reconnects));
+                static_cast<unsigned long>(reconnects),
+                static_cast<double>(lost_ns) / 1e9);
     return 0;
 }
